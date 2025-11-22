@@ -14,8 +14,17 @@ export default function LoginPage() {
     rememberMe: false,
   });
   const dispatch = useDispatch();
-  const { loading, error } = useSelector((state) => state.user);
+  const { loading, error, userDetails } = useSelector((state) => state.user);
   const navigate = useNavigate();
+
+  // Redirect if already authenticated
+  useEffect(() => {
+    const token = sessionStorage.getItem("token");
+    const isAuthenticated = token || userDetails;
+    if (isAuthenticated) {
+      navigate("/", { replace: true });
+    }
+  }, [userDetails, navigate]);
 
   useEffect(() => {
     const rememberedEmail = localStorage.getItem("rememberedEmail");
@@ -52,7 +61,7 @@ export default function LoginPage() {
         localStorage.removeItem("rememberedEmail");
       }
 
-      navigate("/chat");
+      navigate("/");
     } else {
       toast.error(response.payload || "Login failed.");
     }

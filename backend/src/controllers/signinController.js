@@ -10,7 +10,7 @@ const JWT_SECRET = process.env.JWT_SECRET || "8ae74b4cf76c2e91531a6a5e7ed2ef3a62
 
 // @route   POST /login
 // @desc    Authenticate user and return JWT + user data (except password)
-router.post("/login", async (req, res) => {
+router.post("/", async (req, res) => {
   console.log("Incoming sign in body:", req.body);
   const { email, password } = req.body;
 
@@ -30,8 +30,24 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ error: "Invalid email or password." });
     }
 
+    // Debug: Check if password exists
+    if (!user.password) {
+      console.error("User password is missing for email:", email);
+      return res.status(500).json({ error: "User account error. Please contact support." });
+    }
+
+    // Debug: Log password hash format
+    console.log("Stored password hash format:", user.password.substring(0, 10));
+
     // 2. Validate password
+    if (!password) {
+      console.log("Password is missing in request");
+      return res.status(400).json({ error: "Password is required." });
+    }
+
     const isMatch = await bcrypt.compare(password, user.password);
+    console.log("Password comparison result:", isMatch);
+    
     if (!isMatch) {
       console.log("Password incorrect for email:", email);
       return res.status(400).json({ error: "Invalid email or password." });

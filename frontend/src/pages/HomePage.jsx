@@ -9,14 +9,8 @@ export default function HomePage() {
   const { userDetails } = useSelector((state) => state.user);
   const isAuthenticated = sessionStorage.getItem("token") || userDetails;
 
-  React.useEffect(() => {
-    if (isAuthenticated) {
-      navigate("/chat");
-    }
-  }, [isAuthenticated, navigate]);
-
   return (
-    <div className="min-h-[calc(100vh-64px)] flex flex-col items-center justify-center bg-background px-4 py-16" style={{ margin: 0, paddingTop: '4rem' }}>
+    <div className="min-h-[calc(100vh-64px)] flex flex-col items-center justify-center bg-background px-4 py-16" style={{ margin: 0 }}>
       <div className="max-w-2xl w-full text-center space-y-8">
         {/* Logo */}
         <div className="flex justify-center mb-8">
@@ -35,25 +29,44 @@ export default function HomePage() {
           End-to-end encrypted messaging for secure conversations within the FAST NUCES community
         </p>
 
-        {/* CTA Buttons */}
-        <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
-          <Button
-            onClick={() => navigate("/register")}
-            variant="primary"
-            size="lg"
-            className="text-lg px-8 py-6 w-full sm:w-auto"
-          >
-            Get Started
-          </Button>
-          <Button
-            onClick={() => navigate("/login")}
-            variant="outline"
-            size="lg"
-            className="text-lg px-8 py-6 w-full sm:w-auto"
-          >
-            Sign In
-          </Button>
-        </div>
+        {/* CTA Buttons - Only show if not logged in */}
+        {!isAuthenticated && (
+          <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
+            <Button
+              onClick={() => navigate("/register")}
+              variant="primary"
+              size="lg"
+              className="text-lg px-8 py-6 w-full sm:w-auto"
+            >
+              Get Started
+            </Button>
+            <Button
+              onClick={() => navigate("/login")}
+              variant="outline"
+              size="lg"
+              className="text-lg px-8 py-6 w-full sm:w-auto"
+            >
+              Sign In
+            </Button>
+          </div>
+        )}
+
+        {/* Welcome message if logged in */}
+        {isAuthenticated && userDetails && (
+          <div className="flex flex-col gap-4 justify-center items-center">
+            <p className="text-lg text-muted-foreground">
+              Welcome back, <span className="font-semibold text-foreground">{userDetails.fullName}</span>!
+            </p>
+            <Button
+              onClick={() => navigate("/chat")}
+              variant="primary"
+              size="lg"
+              className="text-lg px-8 py-6 w-full sm:w-auto"
+            >
+              Go to Chat
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );

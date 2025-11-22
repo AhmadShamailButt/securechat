@@ -5,9 +5,9 @@ const Footer = () => {
   return (
     <footer className="bg-card border-t border-border mt-auto">
       <div className="w-full px-4 py-8 md:py-10">
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6 md:gap-8">
           {/* Logo and description */}
-          <div className="md:col-span-4 lg:col-span-5 space-y-3">
+          <div className="flex flex-col gap-2">
             <Link to="/" className="flex items-center gap-2">
               <div className="relative flex items-center justify-center h-9 w-9 bg-primary rounded-full overflow-hidden">
                 <span className="text-primary-foreground font-bold text-lg">S</span>
@@ -16,15 +16,15 @@ const Footer = () => {
                 SecureChat
               </span>
             </Link>
-            <p className="text-sm text-muted-foreground mt-2 max-w-md leading-snug">
+            <p className="text-sm text-muted-foreground max-w-md leading-snug">
               End-to-end encrypted messaging for secure conversations.
             </p>
           </div>
 
           {/* Quick Links */}
-          <div className="md:col-span-2 lg:col-span-2">
-            <h3 className="text-sm font-semibold mb-3 text-foreground">Quick Links</h3>
-            <ul className="space-y-2">
+          <div className="flex flex-col gap-2">
+            <h3 className="text-sm font-semibold text-foreground">Quick Links</h3>
+            <ul className="flex flex-wrap gap-4 md:gap-6">
               <li>
                 <Link to="/" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
                   Home
@@ -49,9 +49,9 @@ const Footer = () => {
           </div>
 
           {/* Contact */}
-          <div className="md:col-span-2 lg:col-span-2">
-            <h3 className="text-sm font-semibold mb-3 text-foreground">Contact</h3>
-            <ul className="space-y-2 text-sm text-muted-foreground">
+          <div className="flex flex-col gap-2">
+            <h3 className="text-sm font-semibold text-foreground">Contact</h3>
+            <ul className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
               <li>FAST NUCES Lahore</li>
               <li>support@securechat.com</li>
             </ul>

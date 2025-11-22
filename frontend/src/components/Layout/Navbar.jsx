@@ -48,7 +48,7 @@ const Navbar = () => {
 
   const handleLogout = () => {
     dispatch(logout());
-    navigate('/');
+    navigate('/login', { replace: true });
   };
 
   const navLinks = [
@@ -81,23 +81,36 @@ const Navbar = () => {
 
             {/* Desktop Navigation */}
             <nav className="hidden md:flex items-center space-x-8">
-              {user && navLinks.map((link) => (
+              <Link
+                to="/"
+                className={cn(
+                  "text-sm font-medium transition-colors duration-200 hover:text-primary relative py-2 px-1",
+                  location.pathname === "/"
+                    ? "text-primary"
+                    : "text-foreground/80 hover:text-foreground"
+                )}
+              >
+                Home
+                {location.pathname === "/" && (
+                  <span className="absolute left-0 right-0 bottom-0 h-0.5 bg-primary rounded-full transform transition-transform duration-300"></span>
+                )}
+              </Link>
+              {user && (
                 <Link
-                  key={link.name}
-                  to={link.path}
+                  to="/chat"
                   className={cn(
                     "text-sm font-medium transition-colors duration-200 hover:text-primary relative py-2 px-1",
-                    location.pathname === link.path
+                    location.pathname === "/chat"
                       ? "text-primary"
                       : "text-foreground/80 hover:text-foreground"
                   )}
                 >
-                  {link.name}
-                  {location.pathname === link.path && (
+                  Chat
+                  {location.pathname === "/chat" && (
                     <span className="absolute left-0 right-0 bottom-0 h-0.5 bg-primary rounded-full transform transition-transform duration-300"></span>
                   )}
                 </Link>
-              ))}
+              )}
             </nav>
 
             {/* Right Actions */}
@@ -164,25 +177,36 @@ const Navbar = () => {
           </div>
         </div>
 
-        {/* Mobile Menu */}
-        {mobileMenuOpen && (
-          <div className="md:hidden border-t border-border bg-card">
-            <div className="px-4 py-3 space-y-3">
-              {user && navLinks.map((link) => (
+         {/* Mobile Menu */}
+          {mobileMenuOpen && (
+            <div className="md:hidden border-t border-border bg-card">
+              <div className="px-4 py-3 space-y-3">
                 <Link
-                  key={link.name}
-                  to={link.path}
+                  to="/"
                   onClick={closeMobileMenu}
                   className={cn(
                     "block text-sm font-medium transition-colors py-2",
-                    location.pathname === link.path
+                    location.pathname === "/"
                       ? "text-primary"
                       : "text-foreground/80 hover:text-foreground"
                   )}
                 >
-                  {link.name}
+                  Home
                 </Link>
-              ))}
+                {user && (
+                  <Link
+                    to="/chat"
+                    onClick={closeMobileMenu}
+                    className={cn(
+                      "block text-sm font-medium transition-colors py-2",
+                      location.pathname === "/chat"
+                        ? "text-primary"
+                        : "text-foreground/80 hover:text-foreground"
+                    )}
+                  >
+                    Chat
+                  </Link>
+                )}
               {!user ? (
                 <div className="flex flex-col gap-2 pt-2">
                   <Button 

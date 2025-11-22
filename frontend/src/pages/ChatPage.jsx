@@ -139,40 +139,38 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="w-full h-full" style={{ margin: 0, padding: 0 }}>
+    <div className="w-full h-[calc(100vh-64px)] flex flex-col" style={{ margin: 0, padding: 0 }}>
       {!isConnected && (
-        <div className="bg-warning/20 border border-warning/50 p-2 text-warning flex items-center justify-between">
+        <div className="bg-warning/20 border border-warning/50 p-2 text-warning flex items-center justify-between z-10">
           <span>Connection to messaging service lost.</span>
           <Button onClick={reconnect} variant="outline" size="sm" className="ml-2">
             Reconnect
           </Button>
         </div>
       )}
-      <main className="flex-1 pt-16 w-full" style={{ margin: 0, padding: 0 }}>
-        <div className="h-[calc(100vh-64px)] flex w-full" style={{ margin: 0, padding: 0 }}>
-          {/* Contacts Sidebar */}
-          <ContactsSidebar
-            contacts={contacts}
-            activeId={activeId}
-            setActiveId={handleContactClick}
-          />
+      <div className="flex-1 flex w-full overflow-hidden" style={{ margin: 0, padding: 0 }}>
+        {/* Contacts Sidebar */}
+        <ContactsSidebar
+          contacts={contacts}
+          activeId={activeId}
+          setActiveId={handleContactClick}
+        />
 
-          {/* Chat Area or Empty State */}
-          {activeContact ? (
-            <ChatArea
-              activeContact={activeContact}
-              messages={messages}
-              loading={isMessagesLoading}
-              isConnected={isConnected}
-              connectError={connectError}
-              handleSend={handleSend}
-              currentUserId={user?.id}
-            />
-          ) : (
-            <EmptyChatState />
-          )}
-        </div>
-      </main>
+        {/* Chat Area or Empty State */}
+        {activeContact ? (
+          <ChatArea
+            activeContact={activeContact}
+            messages={messages}
+            loading={isMessagesLoading}
+            isConnected={isConnected}
+            connectError={connectError}
+            handleSend={handleSend}
+            currentUserId={user?.id}
+          />
+        ) : (
+          <EmptyChatState />
+        )}
+      </div>
     </div>
   );
 }

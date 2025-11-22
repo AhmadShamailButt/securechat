@@ -24,7 +24,7 @@ export default function ContactsSidebar({ contacts, activeId, setActiveId }) {
   };
 
   return (
-    <aside className="w-80 bg-card border-r border-border flex flex-col">
+    <aside className="w-80 bg-card border-r border-border flex flex-col h-full overflow-hidden">
       {/* Header */}
       <div className="p-4">
         <h2 className="text-2xl font-semibold text-foreground mb-3">Messages</h2>

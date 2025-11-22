@@ -4,7 +4,7 @@ import axiosInstance from '../axiosInstance';
 // Async thunk: sign in
 export const signIn = createAsyncThunk("user/signIn", async (data, thunkAPI) => {
   try {
-    const response = await axiosInstance.post("/auth/signin", data);
+    const response = await axiosInstance.post("/auth/login", data);
     sessionStorage.setItem("token", response.data.token);
     sessionStorage.setItem("user", JSON.stringify(response.data.user));
     thunkAPI.dispatch(setUserDetails(response.data.user));
@@ -43,12 +43,35 @@ export const fetchUserDetails = createAsyncThunk("user/fetchUserDetails", async 
   }
 });
 
-const initialState = {
-  email: null,
-  userDetails: null,
-  loading: false,
-  error: null,
+// Load user from sessionStorage on initialization
+const loadUserFromStorage = () => {
+  try {
+    const token = sessionStorage.getItem("token");
+    const userStr = sessionStorage.getItem("user");
+    if (token && userStr) {
+      const user = JSON.parse(userStr);
+      return {
+        email: user.email || null,
+        userDetails: user,
+        loading: false,
+        error: null,
+      };
+    }
+  } catch (error) {
+    console.error("Error loading user from sessionStorage:", error);
+    // Clear invalid data
+    sessionStorage.removeItem("token");
+    sessionStorage.removeItem("user");
+  }
+  return {
+    email: null,
+    userDetails: null,
+    loading: false,
+    error: null,
+  };
 };
+
+const initialState = loadUserFromStorage();
 
 const userSlice = createSlice({
   name: 'user',
@@ -67,8 +90,21 @@ const userSlice = createSlice({
       state.email = null;
       state.userDetails = null;
       state.error = null;
+      // Clear sessionStorage
       sessionStorage.removeItem("token");
       sessionStorage.removeItem("user");
+      // Clear localStorage cache
+      localStorage.removeItem("token");
+      localStorage.removeItem("user");
+      localStorage.removeItem("rememberedEmail");
+      // Clear all cache
+      if ('caches' in window) {
+        caches.keys().then((names) => {
+          names.forEach((name) => {
+            caches.delete(name);
+          });
+        });
+      }
     },
   },
   extraReducers: (builder) => {

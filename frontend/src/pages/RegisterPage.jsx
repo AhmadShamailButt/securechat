@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { toast } from 'react-hot-toast';
@@ -14,8 +14,17 @@ export default function RegisterPage() {
     gender: "",
   });
   const dispatch = useDispatch();
-  const { loading, error } = useSelector((state) => state.user);
+  const { loading, error, userDetails } = useSelector((state) => state.user);
   const navigate = useNavigate();
+
+  // Redirect if already authenticated
+  useEffect(() => {
+    const token = sessionStorage.getItem("token");
+    const isAuthenticated = token || userDetails;
+    if (isAuthenticated) {
+      navigate("/", { replace: true });
+    }
+  }, [userDetails, navigate]);
 
   const handleChange = (e) => {
     setFormData((prevData) => ({
@@ -42,7 +51,7 @@ export default function RegisterPage() {
     
     if (response.meta.requestStatus === "fulfilled") {
       toast.success(`Welcome, ${response.payload.user.fullName || 'User'}! Account created successfully.`);
-      navigate("/chat");
+      navigate("/");
     } else {
       toast.error(response.payload || "Signup failed.");
     }
