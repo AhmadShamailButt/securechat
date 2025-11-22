@@ -2,6 +2,7 @@ import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { Button } from '../components/ui/Button';
+import { MessageSquare } from 'lucide-react';
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -15,33 +16,45 @@ export default function HomePage() {
   }, [isAuthenticated, navigate]);
 
   return (
-    <div className="min-h-[calc(100vh-64px)] flex flex-col items-center justify-center bg-background px-4 py-16">
+    <div className="min-h-[calc(100vh-64px)] flex flex-col items-center justify-center bg-background px-4 py-16" style={{ margin: 0, paddingTop: '4rem' }}>
       <div className="max-w-2xl w-full text-center space-y-8">
-        <h1 className="text-5xl font-bold text-foreground mb-4">
+        {/* Logo */}
+        <div className="flex justify-center mb-8">
+          <div className="relative flex items-center justify-center h-20 w-20 bg-primary rounded-full shadow-elevated">
+            <MessageSquare className="h-12 w-12 text-primary-foreground" />
+          </div>
+        </div>
+
+        {/* Title */}
+        <h1 className="text-5xl md:text-6xl font-bold text-foreground mb-4">
           SecureChat
         </h1>
-        <p className="text-xl text-muted-foreground mb-8">
-          End-to-end encrypted messaging for secure conversations
+
+        {/* Description */}
+        <p className="text-xl md:text-2xl text-muted-foreground mb-12 max-w-xl mx-auto">
+          End-to-end encrypted messaging for secure conversations within the FAST NUCES community
         </p>
-        
-        <div className="flex gap-4 justify-center">
-          <Button
-            onClick={() => navigate("/login")}
-            variant="primary"
-            size="lg"
-          >
-            Sign In
-          </Button>
+
+        {/* CTA Buttons */}
+        <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
           <Button
             onClick={() => navigate("/register")}
+            variant="primary"
+            size="lg"
+            className="text-lg px-8 py-6 w-full sm:w-auto"
+          >
+            Get Started
+          </Button>
+          <Button
+            onClick={() => navigate("/login")}
             variant="outline"
             size="lg"
+            className="text-lg px-8 py-6 w-full sm:w-auto"
           >
-            Sign Up
+            Sign In
           </Button>
         </div>
       </div>
     </div>
   );
 }
-

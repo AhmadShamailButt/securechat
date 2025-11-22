@@ -59,7 +59,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-[calc(100vh-64px)] flex items-center justify-center bg-background px-4 py-16">
+    <div className="min-h-[calc(100vh-64px)] flex items-center justify-center bg-background px-4 py-16 w-full" style={{ margin: 0, paddingTop: '4rem' }}>
       <div className="max-w-md w-full bg-card p-8 rounded-lg shadow-elevated border border-border">
         <h2 className="text-3xl font-bold mb-6 text-center text-foreground">
           Sign In

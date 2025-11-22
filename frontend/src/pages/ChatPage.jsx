@@ -139,7 +139,7 @@ export default function ChatPage() {
   }
 
   return (
-    <div>
+    <div className="w-full h-full" style={{ margin: 0, padding: 0 }}>
       {!isConnected && (
         <div className="bg-warning/20 border border-warning/50 p-2 text-warning flex items-center justify-between">
           <span>Connection to messaging service lost.</span>
@@ -148,8 +148,8 @@ export default function ChatPage() {
           </Button>
         </div>
       )}
-      <main className="flex-1 pt-16">
-        <div className="h-[calc(100vh-64px)] flex">
+      <main className="flex-1 pt-16 w-full" style={{ margin: 0, padding: 0 }}>
+        <div className="h-[calc(100vh-64px)] flex w-full" style={{ margin: 0, padding: 0 }}>
           {/* Contacts Sidebar */}
           <ContactsSidebar
             contacts={contacts}
