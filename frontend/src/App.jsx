@@ -18,10 +18,11 @@ function App() {
           <div className="App">
             <Toaster position="top-right" toastOptions={{ duration: 3000 }} />
             <Routes>
+            <Route path="login" element={<LoginPage />} />
+            <Route path="register" element={<RegisterPage />} />
               <Route path="/" element={<Layout />}>
                 <Route index element={<HomePage />} />
-                <Route path="login" element={<LoginPage />} />
-                <Route path="register" element={<RegisterPage />} />
+               
                 <Route path="chat" element={<ChatPage />} />
               </Route>
             </Routes>

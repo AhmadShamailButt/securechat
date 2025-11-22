@@ -15,7 +15,7 @@ export default function HomePage() {
   }, [isAuthenticated, navigate]);
 
   return (
-    <div className="min-h-[calc(100vh-64px)] flex flex-col items-center justify-center bg-gradient-to-br from-primary-50 to-secondary dark:from-background dark:to-background px-4 py-16">
+    <div className="min-h-[calc(100vh-64px)] flex flex-col items-center justify-center bg-background px-4 py-16">
       <div className="max-w-2xl w-full text-center space-y-8">
         <h1 className="text-5xl font-bold text-foreground mb-4">
           SecureChat

@@ -3,14 +3,14 @@ import { Link } from 'react-router-dom';
 
 const Footer = () => {
   return (
-    <footer className="bg-white dark:bg-black border-t border-border mt-auto">
+    <footer className="bg-card border-t border-border mt-auto">
       <div className="container mx-auto px-4 py-8 md:py-10">
         <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
           {/* Logo and description */}
           <div className="md:col-span-4 lg:col-span-5 space-y-3">
             <Link to="/" className="flex items-center gap-2">
               <div className="relative flex items-center justify-center h-9 w-9 bg-primary rounded-full overflow-hidden">
-                <span className="text-white font-bold text-lg">S</span>
+                <span className="text-primary-foreground font-bold text-lg">S</span>
               </div>
               <span className="text-xl font-bold bg-gradient-to-r from-primary to-primary-700 bg-clip-text text-transparent">
                 SecureChat
@@ -23,7 +23,7 @@ const Footer = () => {
 
           {/* Quick Links */}
           <div className="md:col-span-2 lg:col-span-2">
-            <h3 className="text-sm font-semibold mb-3">Quick Links</h3>
+            <h3 className="text-sm font-semibold mb-3 text-foreground">Quick Links</h3>
             <ul className="space-y-2">
               <li>
                 <Link to="/" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
@@ -50,7 +50,7 @@ const Footer = () => {
 
           {/* Contact */}
           <div className="md:col-span-2 lg:col-span-2">
-            <h3 className="text-sm font-semibold mb-3">Contact</h3>
+            <h3 className="text-sm font-semibold mb-3 text-foreground">Contact</h3>
             <ul className="space-y-2 text-sm text-muted-foreground">
               <li>FAST NUCES Lahore</li>
               <li>support@securechat.com</li>

@@ -49,8 +49,8 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="min-h-[calc(100vh-64px)] flex items-center justify-center bg-gradient-to-br from-primary-50 to-secondary dark:from-background dark:to-background px-4 py-16">
-      <div className="max-w-md w-full bg-card p-8 rounded-lg shadow-lg border border-border">
+    <div className="min-h-[calc(100vh-64px)] flex items-center justify-center bg-background px-4 py-16">
+      <div className="max-w-md w-full bg-card p-8 rounded-lg shadow-elevated border border-border">
         <h2 className="text-3xl font-bold mb-6 text-center text-foreground">
           Sign Up
         </h2>
@@ -138,15 +138,6 @@ export default function RegisterPage() {
             className="text-primary hover:underline font-semibold"
           >
             Sign In
-          </Link>
-        </p>
-
-        <p className="mt-4 text-sm text-center">
-          <Link
-            to="/"
-            className="text-muted-foreground hover:text-foreground hover:underline"
-          >
-            ← Back to Home
           </Link>
         </p>
       </div>
