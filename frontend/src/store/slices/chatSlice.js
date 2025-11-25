@@ -48,15 +48,46 @@ export const sendMessage = createAsyncThunk(
   }
 );
 
+export const searchGlobalUsers = createAsyncThunk(
+  "chat/searchGlobalUsers",
+  async (query, thunkAPI) => {
+    try {
+      // Assuming you create a backend route: GET /api/users/search?query=...
+      const response = await axiosInstance.get(`/users/search?query=${query}`);
+      return response.data;
+    } catch (error) {
+      return thunkAPI.rejectWithValue(error.response?.data?.message || "Search failed");
+    }
+  }
+);
+
+// NEW: Add a user to your contact list (simulated "Request Accepted")
+export const addNewContact = createAsyncThunk(
+  "chat/addNewContact",
+  async (userId, thunkAPI) => {
+    try {
+      // Assuming backend route: POST /api/contacts/add { userId }
+      // This endpoint should create a conversation entry in DB if it doesn't exist
+      const response = await axiosInstance.post(`/contacts/add`, { userId }); 
+      return response.data; // Should return the new contact object
+    } catch (error) {
+      toast.error("Failed to add contact");
+      return thunkAPI.rejectWithValue(error.message);
+    }
+  }
+);
+
 // Slice
 const chatSlice = createSlice({
   name: "chat",
   initialState: {
     contacts: [],
     messages: [],
+    searchResults: [], // Store global search results here
     selectedContact: null,
     isContactsLoading: false,
     isMessagesLoading: false,
+    isSearching: false, // UI loading state for search
     error: null,
   },
   reducers: {
@@ -67,11 +98,14 @@ const chatSlice = createSlice({
       state.contacts = [];
       state.messages = [];
       state.selectedContact = null;
-      state.error = null;
     },
     addMessage: (state, action) => {
       state.messages.push(action.payload);
     },
+    // Clear search results when closing the search view
+    clearSearchResults: (state) => {
+      state.searchResults = [];
+    }
   },
   extraReducers: (builder) => {
     builder
@@ -107,9 +141,28 @@ const chatSlice = createSlice({
       })
       .addCase(sendMessage.rejected, (state, action) => {
         state.error = action.payload;
-      });
+      })
+      .addCase(searchGlobalUsers.pending, (state) => {
+      state.isSearching = true;
+      })
+      .addCase(searchGlobalUsers.fulfilled, (state, action) => {
+      state.isSearching = false;
+      // Filter out users who are ALREADY in contacts
+      const contactIds = new Set(state.contacts.map(c => c.id));
+      state.searchResults = action.payload.filter(user => !contactIds.has(user.id));
+    })
+      .addCase(searchGlobalUsers.rejected, (state) => {
+      state.isSearching = false;
+      state.searchResults = [];
+    })
+    .addCase(addNewContact.fulfilled, (state, action) => {
+      // Add the new contact to the list immediately
+      state.contacts.unshift(action.payload);
+      state.selectedContact = action.payload; // Auto-select them
+      state.searchResults = []; // Clear search
+    });
   },
 });
 
-export const { setSelectedContact, clearChatState, addMessage } = chatSlice.actions;
+export const { setSelectedContact, clearChatState, addMessage, clearSearchResults } = chatSlice.actions;
 export default chatSlice.reducer;

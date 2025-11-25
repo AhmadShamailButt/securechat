@@ -1,22 +1,34 @@
 const express = require('express');
-const router = express.Router();
+const router  = express.Router();
 
 const contactsController = require('../controllers/contactsController');
-const messageController = require('../controllers/messageController');
+const messageController  = require('../controllers/messageController');
 const authMiddleware = require('../middleware/authMiddleware');
 
-// Apply auth middleware to all messaging routes
+// --- Global User Operations ---
+
+// Search users globally (e.g., /api/users/search?query=Ali)
+router.get('/users/search', authMiddleware, contactsController.searchUsers);
+
+// Add a user to contacts (e.g., POST /api/contacts/add)
+router.post('/contacts/add', authMiddleware, contactsController.addContact);
+
+
+// --- Messaging Operations ---
+
+// Apply auth middleware to all routes starting with /messages
 router.use('/messages', authMiddleware);
 
-// Contacts routes
+// Get list of existing contacts/conversations
 router.get('/messages/contacts', contactsController.getContacts);
 
-// Messages routes
+// Get specific conversation messages
 router.get('/messages/:conversationId', messageController.getMessages);
+
+// Send a message
 router.post('/messages', messageController.postMessage);
 
-// Create or get conversation
+// Create or get conversation (Alternative method often used for direct linking)
 router.get('/messages/conversation/:userId', messageController.getOrCreateConversation);
 
 module.exports = router;
-
