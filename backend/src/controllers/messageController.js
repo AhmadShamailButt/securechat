@@ -65,7 +65,7 @@ exports.getMessages = async (req, res) => {
     }
 
     // Get messages with sender information - Important: Use the ObjectID, not the string version
-    const messages = await Message.find({ 
+    let messages = await Message.find({ 
       conversationId: conversation._id.toString() 
     })
       .populate('senderId', 'fullName email')
@@ -82,6 +82,17 @@ exports.getMessages = async (req, res) => {
       { $set: { read: true } }
     );
 
+    // Re-fetch messages after marking as read to get updated read status
+    // This ensures sent messages show correct read status
+    if (updateResult.modifiedCount > 0) {
+      messages = await Message.find({ 
+        conversationId: conversation._id.toString() 
+      })
+        .populate('senderId', 'fullName email')
+        .sort({ timestamp: 1 })
+        .limit(100);
+    }
+
     // Get current user info for "me" messages
     const User = require('../models/User');
     const currentUser = await User.findById(currentUserId);
@@ -89,10 +100,12 @@ exports.getMessages = async (req, res) => {
     // If we marked any messages as read, notify the sender via socket
     // (otherParticipant was already declared above)
     if (updateResult.modifiedCount > 0 && req.io && otherParticipant) {
+      // Get the message IDs that were marked as read
       const readMessageIds = messages
         .filter(msg => 
           msg.receiverId.toString() === currentUserId.toString() && 
-          msg.senderId._id.toString() === otherParticipant.toString()
+          msg.senderId._id.toString() === otherParticipant.toString() &&
+          msg.read === true
         )
         .map(msg => msg._id.toString());
 
@@ -104,17 +117,20 @@ exports.getMessages = async (req, res) => {
           readAt: new Date().toISOString()
         };
         
-        console.log('Sending read receipt:', readReceipt);
+        console.log('Sending read receipt to user:', otherParticipant.toString(), readReceipt);
         
         // Emit to the sender of the messages - try multiple ways to ensure delivery
+        // User-specific room (most reliable - user should join this on connection)
         req.io.to(otherParticipant.toString()).emit('messagesRead', readReceipt);
+        // Conversation room
         req.io.to(conversation._id.toString()).emit('messagesRead', readReceipt);
+        // Sample-prefixed room (for backward compatibility)
         req.io.to(`sample-${conversation._id.toString()}`).emit('messagesRead', readReceipt);
       }
     }
 
     // Format messages for the front end
-    // Re-fetch messages to get updated read status, or manually update read status
+    // Messages now have updated read status after re-fetch
     const formattedMessages = messages.map(msg => {
       const isMine = msg.senderId._id.toString() === currentUserId.toString();
       const sender = msg.senderId;
@@ -326,17 +342,31 @@ exports.markAsRead = async (req, res) => {
     );
 
     // Emit read receipt via socket.io
-    if (req.io && otherParticipant) {
+    if (req.io && otherParticipant && result.modifiedCount > 0) {
+      // Get the actual message IDs that were marked as read
+      const actualReadMessageIds = messageIds && messageIds.length > 0 
+        ? messageIds 
+        : (await Message.find({
+            conversationId: conversation._id.toString(),
+            receiverId: currentUserId
+          }).select('_id')).map(msg => msg._id.toString());
+      
       const readReceipt = {
         conversationId: conversation._id.toString(),
-        messageIds: messageIds || [],
+        messageIds: actualReadMessageIds,
         readBy: currentUserId.toString(),
         readAt: new Date().toISOString()
       };
       
-      // Emit to the sender of the messages
+      console.log('Sending read receipt to user:', otherParticipant.toString(), readReceipt);
+      
+      // Emit to the sender of the messages - try multiple ways to ensure delivery
+      // User-specific room (most reliable - user should join this on connection)
       req.io.to(otherParticipant.toString()).emit('messagesRead', readReceipt);
+      // Conversation room
       req.io.to(conversation._id.toString()).emit('messagesRead', readReceipt);
+      // Sample-prefixed room (for backward compatibility)
+      req.io.to(`sample-${conversation._id.toString()}`).emit('messagesRead', readReceipt);
     }
 
     res.json({ 

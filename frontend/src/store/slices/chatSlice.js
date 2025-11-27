@@ -423,7 +423,11 @@ const chatSlice = createSlice({
       })
       .addCase(fetchMessages.fulfilled, (state, action) => {
         state.isMessagesLoading = false;
-        state.messages = action.payload || [];
+        // Ensure all messages have read field set (default to false if undefined)
+        state.messages = (action.payload || []).map(msg => ({
+          ...msg,
+          read: msg.read !== undefined ? msg.read : false
+        }));
       })
       .addCase(fetchMessages.rejected, (state, action) => {
         state.isMessagesLoading = false;
@@ -431,7 +435,25 @@ const chatSlice = createSlice({
       })
       // sendMessage
       .addCase(sendMessage.fulfilled, (state, action) => {
-        state.messages.push(action.payload);
+        const newMessage = action.payload;
+        // Ensure read field is set (default to false for sent messages)
+        if (newMessage.read === undefined) {
+          newMessage.read = false;
+        }
+        // Remove pending message with temp ID and add the real message
+        const tempId = `temp-${Date.now()}`;
+        const pendingIndex = state.messages.findIndex(msg => 
+          msg.pending && 
+          msg.conversationId === newMessage.conversationId &&
+          msg.text === newMessage.text
+        );
+        if (pendingIndex !== -1) {
+          // Replace pending message with real message
+          state.messages[pendingIndex] = newMessage;
+        } else {
+          // If no pending message found, just add the new message
+          state.messages.push(newMessage);
+        }
       })
       .addCase(sendMessage.rejected, (state, action) => {
         state.error = action.payload;

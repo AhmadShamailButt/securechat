@@ -77,10 +77,15 @@ export default function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]); // Only depend on user to avoid infinite loops
 
-  // Emit user online status when connected
+  // Emit user online status when connected and join user-specific room
   useEffect(() => {
     if (isConnected && socket && user?.id) {
       socket.emit('userOnline', { userId: user.id });
+      // Join user-specific room for receiving read receipts
+      socket.emit('join', {
+        conversationId: user.id, // Use user ID as room ID for user-specific room
+        userId: user.id
+      });
     }
   }, [isConnected, socket, user]);
 
@@ -182,21 +187,46 @@ export default function ChatPage() {
     // Listen for read receipts
     const handleMessagesRead = (readReceipt) => {
       console.log('Read receipt received:', readReceipt);
-      if (readReceipt.conversationId === activeId) {
+      console.log('Current activeId:', activeId);
+      console.log('Read receipt conversationId:', readReceipt.conversationId);
+      
+      // Check if this read receipt is for the current conversation
+      const isForCurrentConversation = readReceipt.conversationId === activeId || 
+                                       readReceipt.conversationId?.toString() === activeId?.toString();
+      
+      if (isForCurrentConversation) {
         if (readReceipt.messageIds && readReceipt.messageIds.length > 0) {
-          console.log('Marking messages as read:', readReceipt.messageIds);
+          console.log('Marking specific messages as read:', readReceipt.messageIds);
+          console.log('Current messages in state:', messages.map(m => ({ id: m.id, read: m.read, senderId: m.senderId })));
+          
           readReceipt.messageIds.forEach(messageId => {
-            dispatch(markMessageAsRead({ messageId }));
+            const messageIdStr = messageId.toString();
+            // Find message by ID (handle both string and ObjectId formats)
+            const message = messages.find(msg => 
+              msg.id === messageIdStr || 
+              msg.id === messageId || 
+              msg.id?.toString() === messageIdStr
+            );
+            
+            if (message && message.senderId === 'me' && !message.read) {
+              console.log('Marking message as read:', messageIdStr);
+              dispatch(markMessageAsRead({ messageId: message.id }));
+            } else {
+              console.log('Message not found or already read:', messageIdStr, message);
+            }
           });
         } else {
           // Mark all messages in conversation as read
           console.log('Marking all messages in conversation as read');
           messages.forEach(msg => {
             if (msg.conversationId === activeId && msg.senderId === 'me' && !msg.read) {
+              console.log('Marking message as read:', msg.id);
               dispatch(markMessageAsRead({ messageId: msg.id }));
             }
           });
         }
+      } else {
+        console.log('Read receipt is for a different conversation, ignoring');
       }
     };
 
@@ -228,7 +258,8 @@ export default function ChatPage() {
       } : null,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       fullTimestamp: new Date().toISOString(),
-      pending: true
+      pending: true,
+      read: false // Default to unread when sending
     };
     dispatch(addMessage(newMessage));
     

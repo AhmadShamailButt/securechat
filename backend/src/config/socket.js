@@ -74,6 +74,10 @@ exports.init = (server, corsOptions) => {
         socketUser = userId;
         console.log(`Socket ${socket.id} associated with user ${userId}`);
         
+        // Join user-specific room for receiving read receipts and status updates
+        socket.join(userId.toString());
+        console.log(`Socket ${socket.id} joined user room: ${userId}`);
+        
         // Mark user as online when they join (with retry if MongoDB not ready)
         const updateStatusOnJoin = async (retries = 5) => {
           if (isConnected() || mongoose.connection.readyState === 1) {
