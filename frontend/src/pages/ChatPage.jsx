@@ -6,7 +6,7 @@ import ContactsSidebar from "../components/Chat/ContactsSidebar";
 import ChatArea from "../components/Chat/ChatArea";
 import EmptyChatState from "../components/Chat/EmptyChatState";
 import ForwardMessageDialog from "../components/Chat/ForwardMessageDialog";
-import { fetchContacts, fetchMessages, sendMessage, setSelectedContact, setSelectedGroup, addMessage, getFriendRequests, fetchGroups, getGroupRequests, clearMessages } from '../store/slices/chatSlice';
+import { fetchContacts, fetchMessages, sendMessage, setSelectedContact, setSelectedGroup, addMessage, getFriendRequests, fetchGroups, getGroupRequests, clearMessages, markMessagesAsRead, markMessageAsRead, updateContactStatus } from '../store/slices/chatSlice';
 import { Button } from '../components/ui/Button';
 
 export default function ChatPage() {
@@ -77,6 +77,32 @@ export default function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]); // Only depend on user to avoid infinite loops
 
+  // Emit user online status when connected
+  useEffect(() => {
+    if (isConnected && socket && user?.id) {
+      socket.emit('userOnline', { userId: user.id });
+    }
+  }, [isConnected, socket, user]);
+
+  // Listen for user status changes (online/offline)
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleUserStatusChanged = (data) => {
+      dispatch(updateContactStatus({
+        userId: data.userId,
+        isOnline: data.isOnline,
+        lastSeen: data.lastSeen
+      }));
+    };
+
+    socket.on('userStatusChanged', handleUserStatusChanged);
+
+    return () => {
+      socket.off('userStatusChanged', handleUserStatusChanged);
+    };
+  }, [socket, dispatch]);
+
   // Join room effect (only for contacts, not groups)
   useEffect(() => {
     if (!activeId || !isConnected || !socket || activeGroup) return; // Skip if it's a group
@@ -111,6 +137,28 @@ export default function ChatPage() {
     dispatch(fetchMessages(activeId));
   }, [activeId, dispatch, activeGroup]);
 
+  // Mark messages as read when viewing the conversation
+  useEffect(() => {
+    if (!activeId || activeGroup || !messages.length) return;
+    
+    // Get unread messages sent by the other person
+    const unreadMessages = messages.filter(
+      msg => msg.conversationId === activeId && 
+              msg.senderId !== 'me' && 
+              msg.senderId !== user?.id && 
+              !msg.read &&
+              !msg.pending
+    );
+
+    if (unreadMessages.length > 0) {
+      const messageIds = unreadMessages.map(msg => msg.id);
+      dispatch(markMessagesAsRead({ 
+        conversationId: activeId, 
+        messageIds 
+      }));
+    }
+  }, [activeId, messages, activeGroup, dispatch, user]);
+
   // Listen for new messages (only for contacts, not groups)
   useEffect(() => {
     if (!isConnected || !activeId || !socket || activeGroup) return; // Skip if it's a group
@@ -130,11 +178,36 @@ export default function ChatPage() {
         dispatch(addMessage(msg));
       }
     };
+    
+    // Listen for read receipts
+    const handleMessagesRead = (readReceipt) => {
+      console.log('Read receipt received:', readReceipt);
+      if (readReceipt.conversationId === activeId) {
+        if (readReceipt.messageIds && readReceipt.messageIds.length > 0) {
+          console.log('Marking messages as read:', readReceipt.messageIds);
+          readReceipt.messageIds.forEach(messageId => {
+            dispatch(markMessageAsRead({ messageId }));
+          });
+        } else {
+          // Mark all messages in conversation as read
+          console.log('Marking all messages in conversation as read');
+          messages.forEach(msg => {
+            if (msg.conversationId === activeId && msg.senderId === 'me' && !msg.read) {
+              dispatch(markMessageAsRead({ messageId: msg.id }));
+            }
+          });
+        }
+      }
+    };
+
     socket.on('newMessage', handleNewMessage);
+    socket.on('messagesRead', handleMessagesRead);
+    
     return () => {
       socket.off('newMessage', handleNewMessage);
+      socket.off('messagesRead', handleMessagesRead);
     };
-  }, [isConnected, activeId, socket, processedMessageIds, user, dispatch, activeGroup]);
+  }, [isConnected, activeId, socket, processedMessageIds, user, dispatch, activeGroup, messages]);
 
   const handleSend = async (e, messageText, replyingTo = null) => {
     e.preventDefault();

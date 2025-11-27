@@ -75,6 +75,23 @@ export const forwardMessage = createAsyncThunk(
   }
 );
 
+// Mark messages as read
+export const markMessagesAsRead = createAsyncThunk(
+  "chat/markMessagesAsRead",
+  async ({ conversationId, messageIds }, thunkAPI) => {
+    try {
+      const response = await axiosInstance.post(
+        `/messages/read`,
+        { conversationId, messageIds }
+      );
+      return response.data;
+    } catch (error) {
+      // Don't show error toast for read receipts
+      return thunkAPI.rejectWithValue(error.response?.data?.error || error.message);
+    }
+  }
+);
+
 export const searchGlobalUsers = createAsyncThunk(
   "chat/searchGlobalUsers",
   async (query, thunkAPI) => {
@@ -328,6 +345,39 @@ const chatSlice = createSlice({
       state.friendRequests = { received: [], sent: [] };
     },
     // Update a message (for pending messages)
+    markMessageAsRead: (state, action) => {
+      const { messageId } = action.payload;
+      const message = state.messages.find(msg => msg.id === messageId);
+      if (message) {
+        message.read = true;
+      }
+    },
+    markMessagesAsReadBatch: (state, action) => {
+      const { messageIds } = action.payload;
+      messageIds.forEach(messageId => {
+        const message = state.messages.find(msg => msg.id === messageId);
+        if (message) {
+          message.read = true;
+        }
+      });
+    },
+    updateContactStatus: (state, action) => {
+      const { userId, isOnline, lastSeen } = action.payload;
+      const contact = state.contacts.find(c => c.userId === userId);
+      if (contact) {
+        contact.isOnline = isOnline;
+        if (lastSeen) {
+          contact.lastSeen = lastSeen;
+        }
+      }
+      // Also update selectedContact if it matches
+      if (state.selectedContact && state.selectedContact.userId === userId) {
+        state.selectedContact.isOnline = isOnline;
+        if (lastSeen) {
+          state.selectedContact.lastSeen = lastSeen;
+        }
+      }
+    },
     updateMessage: (state, action) => {
       const { tempId, message } = action.payload;
       const index = state.messages.findIndex(msg => msg.id === tempId);
@@ -540,9 +590,29 @@ const chatSlice = createSlice({
     .addCase(sendGroupRequest.fulfilled, (state, action) => {
       // Refresh group requests to show the sent request
       // This will be handled by getGroupRequests if needed
+    })
+    // markMessagesAsRead
+    .addCase(markMessagesAsRead.fulfilled, (state, action) => {
+      const { messageIds } = action.meta.arg;
+      if (messageIds && Array.isArray(messageIds) && messageIds.length > 0) {
+        messageIds.forEach(messageId => {
+          const message = state.messages.find(msg => msg.id === messageId);
+          if (message) {
+            message.read = true;
+          }
+        });
+      } else {
+        // Mark all unread messages in the conversation as read
+        const { conversationId } = action.meta.arg;
+        state.messages.forEach(msg => {
+          if (msg.conversationId === conversationId && msg.senderId === 'me' && !msg.read) {
+            msg.read = true;
+          }
+        });
+      }
     });
   },
 });
 
-export const { setSelectedContact, setSelectedGroup, clearChatState, addMessage, clearSearchResults, updateMessage, markMessageFailed, clearMessages } = chatSlice.actions;
+export const { setSelectedContact, setSelectedGroup, clearChatState, addMessage, clearSearchResults, updateMessage, markMessageFailed, clearMessages, markMessageAsRead, markMessagesAsReadBatch, updateContactStatus } = chatSlice.actions;
 export default chatSlice.reducer;

@@ -72,8 +72,8 @@ exports.getMessages = async (req, res) => {
       .sort({ timestamp: 1 })
       .limit(100); // Limit to last 100 messages
     
-    // Mark messages as read
-    await Message.updateMany(
+    // Mark messages as read (messages received by current user)
+    const updateResult = await Message.updateMany(
       { 
         conversationId: conversation._id.toString(),
         receiverId: currentUserId,
@@ -86,10 +86,47 @@ exports.getMessages = async (req, res) => {
     const User = require('../models/User');
     const currentUser = await User.findById(currentUserId);
 
+    // If we marked any messages as read, notify the sender via socket
+    // (otherParticipant was already declared above)
+    if (updateResult.modifiedCount > 0 && req.io && otherParticipant) {
+      const readMessageIds = messages
+        .filter(msg => 
+          msg.receiverId.toString() === currentUserId.toString() && 
+          msg.senderId._id.toString() === otherParticipant.toString()
+        )
+        .map(msg => msg._id.toString());
+
+      if (readMessageIds.length > 0) {
+        const readReceipt = {
+          conversationId: conversation._id.toString(),
+          messageIds: readMessageIds,
+          readBy: currentUserId.toString(),
+          readAt: new Date().toISOString()
+        };
+        
+        console.log('Sending read receipt:', readReceipt);
+        
+        // Emit to the sender of the messages - try multiple ways to ensure delivery
+        req.io.to(otherParticipant.toString()).emit('messagesRead', readReceipt);
+        req.io.to(conversation._id.toString()).emit('messagesRead', readReceipt);
+        req.io.to(`sample-${conversation._id.toString()}`).emit('messagesRead', readReceipt);
+      }
+    }
+
     // Format messages for the front end
+    // Re-fetch messages to get updated read status, or manually update read status
     const formattedMessages = messages.map(msg => {
       const isMine = msg.senderId._id.toString() === currentUserId.toString();
       const sender = msg.senderId;
+      
+      // For messages sent by current user: read status indicates if receiver has read it
+      // For messages received by current user: they're now read (we just marked them)
+      let readStatus = msg.read;
+      if (!isMine) {
+        // For received messages, they're now read (we just marked them as read)
+        readStatus = true;
+      }
+      // For sent messages, keep the original read status (indicates if receiver read it)
       
       return {
         id: msg._id.toString(),
@@ -99,7 +136,7 @@ exports.getMessages = async (req, res) => {
         text: msg.text,
         timestamp: new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         fullTimestamp: msg.timestamp.toISOString ? msg.timestamp.toISOString() : new Date(msg.timestamp).toISOString(),
-        read: msg.read
+        read: readStatus
       };
     });
 
@@ -227,6 +264,88 @@ exports.postMessage = async (req, res) => {
   } catch (error) {
     console.error('Error creating message:', error);
     res.status(500).json({ error: 'Failed to create message' });
+  }
+};
+
+/**
+ * Mark messages as read
+ */
+exports.markAsRead = async (req, res) => {
+  try {
+    const { conversationId, messageIds } = req.body;
+    
+    // Get current user ID from token
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ error: 'Not authenticated' });
+    }
+    
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const currentUserId = decoded.userId;
+
+    // Validate conversation exists and user is part of it
+    const conversation = await Conversation.findById(conversationId);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const isParticipant = conversation.participants.some(
+      p => p.toString() === currentUserId.toString()
+    );
+    
+    if (!isParticipant) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    // Mark messages as read
+    const updateQuery = {
+      conversationId: conversation._id.toString(),
+      receiverId: currentUserId,
+      read: false
+    };
+
+    // If specific message IDs provided, only mark those
+    if (messageIds && Array.isArray(messageIds) && messageIds.length > 0) {
+      updateQuery._id = { $in: messageIds.map(id => {
+        // Handle both string and ObjectId
+        if (mongoose.Types.ObjectId.isValid(id)) {
+          return new mongoose.Types.ObjectId(id);
+        }
+        return id;
+      })};
+    }
+
+    const result = await Message.updateMany(
+      updateQuery,
+      { $set: { read: true } }
+    );
+
+    // Get the other participant to notify them
+    const otherParticipant = conversation.participants.find(
+      p => p.toString() !== currentUserId.toString()
+    );
+
+    // Emit read receipt via socket.io
+    if (req.io && otherParticipant) {
+      const readReceipt = {
+        conversationId: conversation._id.toString(),
+        messageIds: messageIds || [],
+        readBy: currentUserId.toString(),
+        readAt: new Date().toISOString()
+      };
+      
+      // Emit to the sender of the messages
+      req.io.to(otherParticipant.toString()).emit('messagesRead', readReceipt);
+      req.io.to(conversation._id.toString()).emit('messagesRead', readReceipt);
+    }
+
+    res.json({ 
+      success: true, 
+      updatedCount: result.modifiedCount 
+    });
+  } catch (error) {
+    console.error('Error marking messages as read:', error);
+    res.status(500).json({ error: 'Failed to mark messages as read' });
   }
 };
 

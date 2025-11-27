@@ -280,7 +280,35 @@ export default function ContactsSidebar({ contacts, activeId, setActiveId }) {
             <div className="flex-1 overflow-hidden">
                   <div className="flex justify-between items-baseline">
                     <p className="text-sm font-medium text-foreground truncate">{contact.name}</p>
-                    <span className="text-[10px] text-muted-foreground">{contact.lastSeen === 'Online' ? '' : contact.lastSeen}</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {contact.isOnline ? (
+                        'Online'
+                      ) : contact.lastSeen ? (
+                        (() => {
+                          try {
+                            const lastSeenDate = new Date(contact.lastSeen);
+                            if (isNaN(lastSeenDate.getTime())) {
+                              return '';
+                            }
+                            const now = new Date();
+                            const diffMs = now - lastSeenDate;
+                            const diffMins = Math.floor(diffMs / 60000);
+                            const diffHours = Math.floor(diffMs / 3600000);
+                            const diffDays = Math.floor(diffMs / 86400000);
+
+                            if (diffMins < 1) return 'Just now';
+                            if (diffMins < 60) return `${diffMins}m ago`;
+                            if (diffHours < 24) return `${diffHours}h ago`;
+                            if (diffDays < 7) return `${diffDays}d ago`;
+                            return lastSeenDate.toLocaleDateString([], { month: 'short', day: 'numeric' });
+                          } catch (e) {
+                            return '';
+                          }
+                        })()
+                      ) : (
+                        ''
+                      )}
+                    </span>
                   </div>
                   <p className="text-xs text-muted-foreground truncate mt-0.5">
                     {contact.lastMessage || "Tap to chat"}

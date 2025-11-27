@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, Check, CheckCheck } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { toast } from 'react-hot-toast';
 import ForwardMessageDialog from './ForwardMessageDialog';
@@ -372,6 +372,15 @@ function MessageBubble({ message, messages, currentUserId, activeContact, curren
               : "text-muted-foreground"
           )}>
             <span className="opacity-70">{displayTimestamp}</span>
+            {isMine && !message.pending && !message.failed && (
+              <span className="ml-1 flex items-center">
+                {message.read ? (
+                  <CheckCheck className="h-3.5 w-3.5 text-blue-500" />
+                ) : (
+                  <Check className="h-3.5 w-3.5 text-primary-foreground/70" />
+                )}
+              </span>
+            )}
             {message.pending && (
               <span>⏳</span>
             )}
