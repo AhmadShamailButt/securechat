@@ -1,14 +1,21 @@
 import React from 'react';
+import PropTypes from 'prop-types';
 import { cn } from '../../lib/utils';
+import { Loader2 } from 'lucide-react';
 
-export default function MessageList({ messages, loading, currentUserId }) {
+export default function MessageList({ messages = [], loading = false, currentUserId }) {
   if (loading && messages.length === 0) {
-    return <div className="flex justify-center p-4 text-muted-foreground">Loading messages...</div>;
+    return (
+      <div className="flex justify-center items-center h-full p-4 text-muted-foreground">
+        <Loader2 className="h-6 w-6 animate-spin mr-2" />
+        Loading messages...
+      </div>
+    );
   }
 
-  if (messages.length === 0) {
+  if (!messages || messages.length === 0) {
     return (
-      <div className="flex justify-center p-4 text-muted-foreground">
+      <div className="flex justify-center items-center h-full p-4 text-muted-foreground opacity-70">
         No messages yet. Start the conversation!
       </div>
     );
@@ -16,8 +23,12 @@ export default function MessageList({ messages, loading, currentUserId }) {
 
   return (
     <div className="space-y-4">
-      {messages.map(msg => (
-        <MessageBubble key={msg.id} message={msg} currentUserId={currentUserId} />
+      {messages.map((msg, index) => (
+        <MessageBubble 
+          key={msg.id || index} 
+          message={msg} 
+          currentUserId={currentUserId} 
+        />
       ))}
     </div>
   );
@@ -29,33 +40,49 @@ function MessageBubble({ message, currentUserId }) {
   return (
     <div
       className={cn(
-        "flex",
+        "flex w-full",
         isMine ? "justify-end" : "justify-start"
       )}
     >
       <div className={cn(
-        "max-w-xs sm:max-w-md rounded-2xl px-4 py-2",
+        "max-w-[75%] sm:max-w-md rounded-2xl px-4 py-2 break-words shadow-sm",
         isMine 
           ? "bg-primary text-primary-foreground rounded-tr-none"
-          : "bg-muted text-muted-foreground rounded-tl-none"
+          : "bg-muted text-foreground rounded-tl-none"
       )}>
-        <p className={cn(isMine ? "text-primary-foreground" : "text-foreground")}>{message.text}</p>
+        <p className="text-sm leading-relaxed">{message.text}</p>
         <div className={cn(
-          "text-xs mt-1 flex justify-end",
+          "text-[10px] mt-1 flex items-center justify-end gap-1",
           isMine
             ? "text-primary-foreground/70"
             : "text-muted-foreground"
         )}>
           {message.timestamp}
-          {message.pending && (
-            <span className="ml-2">⏳</span>
-          )}
-          {message.failed && (
-            <span className="ml-2 text-destructive">❌</span>
-          )}
+          {message.pending && <span>⏳</span>}
+          {message.failed && <span className="text-destructive">❌</span>}
         </div>
       </div>
     </div>
   );
 }
 
+// Strict Prop Validation
+MessageList.propTypes = {
+  messages: PropTypes.arrayOf(
+    PropTypes.shape({
+      id: PropTypes.string,
+      text: PropTypes.string.isRequired,
+      senderId: PropTypes.string.isRequired,
+      timestamp: PropTypes.string,
+      pending: PropTypes.bool,
+      failed: PropTypes.bool,
+    })
+  ),
+  loading: PropTypes.bool,
+  currentUserId: PropTypes.string,
+};
+
+MessageBubble.propTypes = {
+  message: PropTypes.object.isRequired,
+  currentUserId: PropTypes.string,
+};

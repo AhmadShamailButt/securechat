@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
+import PropTypes from 'prop-types';
 import { Search, UserPlus, Loader2 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
-import { searchGlobalUsers, addNewContact, clearSearchResults } from '../../store/slices/chatSlice';
+import { searchGlobalUsers, addNewContact, clearSearchResults, setSelectedContact } from '../../store/slices/chatSlice';
 
-export default function ContactsSidebar({ contacts, activeId, setActiveId }) {
+export default function ContactsSidebar({ contacts = [], activeId, setActiveId }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [isGlobalSearchMode, setIsGlobalSearchMode] = useState(false);
   const dispatch = useDispatch();
@@ -15,14 +16,13 @@ export default function ContactsSidebar({ contacts, activeId, setActiveId }) {
   // Redux state for global search
   const { searchResults, isSearching } = useSelector(state => state.chat);
 
-  // 1. Local Filter Logic
+  // Local Filter Logic (filters existing contacts)
   const localFiltered = searchTerm && !isGlobalSearchMode
-    ? contacts.filter(c => c.name.toLowerCase().includes(searchTerm.toLowerCase()))
+    ? contacts.filter(c => c.name && c.name.toLowerCase().includes(searchTerm.toLowerCase()))
     : contacts;
 
   const handleSearchChange = (e) => {
     setSearchTerm(e.target.value);
-    // If user clears input, reset to local mode
     if (e.target.value === '') {
       setIsGlobalSearchMode(false);
       dispatch(clearSearchResults());
@@ -36,25 +36,38 @@ export default function ContactsSidebar({ contacts, activeId, setActiveId }) {
   };
 
   const handleAddUser = async (user) => {
-    // Add user to contacts -> this triggers Redux to add to 'contacts' array
-    await dispatch(addNewContact(user.id));
-    // Reset search UI
-    setSearchTerm('');
-    setIsGlobalSearchMode(false);
-    // Navigate/Select is handled by the Redux extraReducer or effect in ChatPage
-    setActiveId(user.id);
+    // Add user -> Redux updates 'contacts' list -> we select them
+    const resultAction = await dispatch(addNewContact(user.id));
+    if (addNewContact.fulfilled.match(resultAction)) {
+      const newContact = resultAction.payload;
+      
+      // Reset search UI
+      setSearchTerm('');
+      setIsGlobalSearchMode(false);
+      dispatch(clearSearchResults());
+
+      // Navigate to chat
+      if (setActiveId) setActiveId(newContact.id);
+      dispatch(setSelectedContact(newContact));
+      
+      navigate(location.pathname, {
+        replace: true,
+        state: { ...location.state, activeConversation: newContact.id }
+      });
+    }
   };
 
-  const selectContact = (id) => {
-    setActiveId(id);
+  const selectContact = (contact) => {
+    if (setActiveId) setActiveId(contact.id);
+    dispatch(setSelectedContact(contact));
     navigate(location.pathname, {
       replace: true,
-      state: { ...location.state, activeConversation: id }
+      state: { ...location.state, activeConversation: contact.id }
     });
   };
 
   return (
-    <aside className="w-80 bg-card border-r border-border flex flex-col h-full overflow-hidden">
+    <aside className="w-80 bg-card border-r border-border flex flex-col h-full overflow-hidden shrink-0">
       {/* Header */}
       <div className="p-4 border-b border-border">
         <h2 className="text-2xl font-semibold text-foreground mb-3">Messages</h2>
@@ -70,7 +83,7 @@ export default function ContactsSidebar({ contacts, activeId, setActiveId }) {
               onKeyDown={(e) => e.key === 'Enter' && handleGlobalSearch()}
             />
           </div>
-          {/* Button to trigger Global Search explicitly */}
+          {/* Global Search Button */}
           {searchTerm && !isGlobalSearchMode && (
             <button 
               onClick={handleGlobalSearch}
@@ -85,9 +98,8 @@ export default function ContactsSidebar({ contacts, activeId, setActiveId }) {
 
       {/* List Area */}
       <div className="flex-1 overflow-y-auto divide-y divide-border py-2">
-        
-        {/* VIEW 1: Global Search Results */}
         {isGlobalSearchMode ? (
+          /* VIEW 1: Global Search Results */
           <div className="px-2">
             <div className="flex items-center justify-between px-2 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
               <span>Directory Results</span>
@@ -108,15 +120,16 @@ export default function ContactsSidebar({ contacts, activeId, setActiveId }) {
               searchResults.map(user => (
                 <div key={user.id} className="w-full flex items-center gap-3 px-4 py-3 hover:bg-muted rounded-lg transition-colors">
                   <div className="h-10 w-10 rounded-full bg-secondary flex items-center justify-center text-lg font-medium text-secondary-foreground">
-                    {user.name.charAt(0).toUpperCase()}
+                    {user.name ? user.name.charAt(0).toUpperCase() : '?'}
                   </div>
                   <div className="flex-1 overflow-hidden">
-                    <p className="text-sm font-medium text-foreground truncate">{user.name}</p>
-                    <p className="text-xs text-muted-foreground truncate">{user.email || 'No status'}</p>
+                    <p className="text-sm font-medium text-foreground truncate">{user.name || 'Unknown'}</p>
+                    <p className="text-xs text-muted-foreground truncate">{user.email || 'No email'}</p>
                   </div>
                   <button
                     onClick={() => handleAddUser(user)}
                     className="p-2 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition shadow-sm"
+                    title="Start Conversation"
                   >
                     <UserPlus className="h-4 w-4" />
                   </button>
@@ -131,10 +144,10 @@ export default function ContactsSidebar({ contacts, activeId, setActiveId }) {
         ) : (
           /* VIEW 2: Existing Contacts (Default) */
           <>
-            {localFiltered.length > 0 ? localFiltered.map(contact => (
+            {localFiltered && localFiltered.length > 0 ? localFiltered.map(contact => (
               <button
                 key={contact.id}
-                onClick={() => selectContact(contact.id)}
+                onClick={() => selectContact(contact)}
                 className={cn(
                   "w-full flex items-center gap-3 px-4 py-3 transition-colors text-left",
                   activeId === contact.id ? "bg-primary/10" : "hover:bg-muted"
@@ -142,7 +155,7 @@ export default function ContactsSidebar({ contacts, activeId, setActiveId }) {
               >
                 <div className="relative flex-shrink-0">
                   <div className="h-10 w-10 rounded-full bg-primary/20 flex items-center justify-center text-lg font-medium text-primary">
-                    {contact.name.charAt(0).toUpperCase()}
+                    {contact.name ? contact.name.charAt(0).toUpperCase() : '?'}
                   </div>
                   {contact.isOnline && (
                     <span className="absolute bottom-0 right-0 block h-3 w-3 rounded-full ring-2 ring-background bg-success" />
@@ -150,13 +163,18 @@ export default function ContactsSidebar({ contacts, activeId, setActiveId }) {
                 </div>
                 <div className="flex-1 overflow-hidden">
                   <div className="flex justify-between items-baseline">
-                    <p className="text-sm font-medium text-foreground truncate">{contact.name}</p>
+                    <p className="text-sm font-medium text-foreground truncate">{contact.name || 'Unknown'}</p>
                     <span className="text-[10px] text-muted-foreground">{contact.lastSeen === 'Online' ? '' : contact.lastSeen}</span>
                   </div>
                   <p className="text-xs text-muted-foreground truncate mt-0.5">
                     {contact.lastMessage || "Tap to chat"}
                   </p>
                 </div>
+                {contact.unreadCount > 0 && (
+                  <span className="ml-auto flex h-5 min-w-[20px] items-center justify-center rounded-full bg-primary px-1.5 text-xs font-medium text-primary-foreground">
+                    {contact.unreadCount}
+                  </span>
+                )}
               </button>
             )) : (
               <div className="p-8 text-center">
@@ -177,3 +195,19 @@ export default function ContactsSidebar({ contacts, activeId, setActiveId }) {
     </aside>
   );
 }
+
+ContactsSidebar.propTypes = {
+  contacts: PropTypes.arrayOf(
+    PropTypes.shape({
+      id: PropTypes.string.isRequired,
+      name: PropTypes.string,
+      email: PropTypes.string,
+      isOnline: PropTypes.bool,
+      lastSeen: PropTypes.string,
+      lastMessage: PropTypes.string,
+      unreadCount: PropTypes.number,
+    })
+  ),
+  activeId: PropTypes.string,
+  setActiveId: PropTypes.func.isRequired,
+};
