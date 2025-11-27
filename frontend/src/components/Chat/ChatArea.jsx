@@ -1,40 +1,33 @@
 import React, { useState } from "react";
-import PropTypes from "prop-types";
-import { Send, AlertCircle, Loader2 } from "lucide-react";
+import { Send } from "lucide-react";
 import { cn } from "../../lib/utils";
 import ChatHeader from "./ChatHeader";
 import MessageList from "./MessageList";
 
 export default function ChatArea({
   activeContact,
-  messages = [],
-  loading = false,
-  isConnected = true,
-  connectError = null,
+  messages,
+  loading,
+  isConnected,
+  connectError,
   handleSend,
   currentUserId,
+  isFriend = true, // Assume contact is a friend (since contacts list only shows friends)
 }) {
   const [messageText, setMessageText] = useState("");
 
   const onSubmit = (e) => {
     e.preventDefault();
-    if (messageText.trim() && handleSend) {
+    if (messageText.trim() && isFriend) {
       handleSend(e, messageText);
       setMessageText("");
     }
   };
 
-  // Safety check: if activeContact is missing, prevent crash
-  if (!activeContact) {
-    return (
-      <div className="flex-1 flex items-center justify-center bg-background text-muted-foreground">
-        Select a contact
-      </div>
-    );
-  }
+  const canSendMessage = isConnected && isFriend;
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden">
+    <div className="flex-1 flex flex-col">
       {/* Chat header */}
       <ChatHeader activeContact={activeContact} />
 
@@ -49,59 +42,48 @@ export default function ChatArea({
 
       {/* Input box */}
       <div className="p-4 border-t border-border bg-card">
-        <form onSubmit={onSubmit} className="flex gap-2">
-          <input
-            type="text"
-            placeholder={isConnected ? "Type a message…" : "Reconnecting…"}
-            value={messageText}
-            onChange={(e) => setMessageText(e.target.value)}
-            className="flex-1 p-2 border border-input rounded-md bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
-            disabled={!isConnected}
-          />
-          <button
-            type="submit"
-            className={cn(
-              "p-2 rounded-md transition-colors flex items-center justify-center",
-              isConnected && messageText.trim()
-                ? "bg-primary hover:bg-primary/90 text-primary-foreground"
-                : "bg-muted text-muted-foreground cursor-not-allowed"
+        {!isFriend ? (
+          <div className="flex items-center justify-center p-4 bg-muted/50 rounded-md">
+            <p className="text-sm text-muted-foreground text-center">
+              You must be friends to send messages. Please accept the friend request first.
+            </p>
+          </div>
+        ) : (
+          <>
+            <form onSubmit={onSubmit} className="flex gap-2">
+              <input
+                type="text"
+                placeholder={canSendMessage ? "Type a message…" : "Reconnecting…"}
+                value={messageText}
+                onChange={(e) => setMessageText(e.target.value)}
+                className="flex-1 p-2 border border-input rounded-md bg-background text-foreground placeholder:text-muted-foreground"
+                disabled={!canSendMessage}
+              />
+              <button
+                type="submit"
+                className={cn(
+                  "p-2 rounded-md transition-colors",
+                  canSendMessage
+                    ? "bg-primary hover:bg-primary/90 text-primary-foreground"
+                    : "bg-muted text-muted-foreground cursor-not-allowed"
+                )}
+                disabled={!canSendMessage || !messageText.trim()}
+              >
+                <Send className="h-5 w-5" />
+              </button>
+            </form>
+            {!isConnected && (
+              <p className="mt-2 text-xs text-warning">
+                Disconnected. Reconnecting…
+              </p>
             )}
-            disabled={!isConnected || !messageText.trim()}
-          >
-            <Send className="h-5 w-5" />
-          </button>
-        </form>
-        
-        {/* Status Indicators */}
-        {!isConnected && (
-          <div className="mt-2 flex items-center gap-2 text-xs text-warning">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            <span>Disconnected. Reconnecting…</span>
-          </div>
-        )}
-        {connectError && (
-          <div className="mt-1 flex items-center gap-2 text-xs text-destructive">
-            <AlertCircle className="h-3 w-3" />
-            <span>Error: {connectError}</span>
-          </div>
+            {connectError && (
+              <p className="mt-1 text-xs text-destructive">Error: {connectError}</p>
+            )}
+          </>
         )}
       </div>
     </div>
   );
 }
 
-// Strict Prop Validation
-ChatArea.propTypes = {
-  activeContact: PropTypes.shape({
-    id: PropTypes.string,
-    name: PropTypes.string,
-    isOnline: PropTypes.bool,
-    lastSeen: PropTypes.string,
-  }).isRequired,
-  messages: PropTypes.arrayOf(PropTypes.object),
-  loading: PropTypes.bool,
-  isConnected: PropTypes.bool,
-  connectError: PropTypes.string,
-  handleSend: PropTypes.func.isRequired,
-  currentUserId: PropTypes.string,
-};
