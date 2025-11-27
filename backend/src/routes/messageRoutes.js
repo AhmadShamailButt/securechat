@@ -29,6 +29,9 @@ router.get('/messages/:conversationId', messageController.getMessages);
 // Send a message
 router.post('/messages', messageController.postMessage);
 
+// Forward a message
+router.post('/messages/forward', messageController.forwardMessage);
+
 // Create or get conversation (Alternative method often used for direct linking)
 router.get('/messages/conversation/:userId', messageController.getOrCreateConversation);
 

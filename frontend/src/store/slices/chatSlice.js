@@ -53,6 +53,28 @@ export const sendMessage = createAsyncThunk(
   }
 );
 
+// Forward a message to friends
+export const forwardMessage = createAsyncThunk(
+  "chat/forwardMessage",
+  async ({ messageId, friendIds }, thunkAPI) => {
+    try {
+      const response = await axiosInstance.post(
+        `/messages/forward`,
+        { messageId, friendIds }
+      );
+      toast.success(`Message forwarded to ${response.data.forwardedCount} friend(s)`);
+      if (response.data.errors && response.data.errors.length > 0) {
+        toast.error(`Some forwards failed: ${response.data.errors.length} error(s)`);
+      }
+      return response.data;
+    } catch (error) {
+      const message = error.response?.data?.error || error.response?.data?.message || error.message;
+      toast.error(message);
+      return thunkAPI.rejectWithValue(message);
+    }
+  }
+);
+
 export const searchGlobalUsers = createAsyncThunk(
   "chat/searchGlobalUsers",
   async (query, thunkAPI) => {
@@ -321,6 +343,10 @@ const chatSlice = createSlice({
         message.pending = false;
         message.failed = true;
       }
+    },
+    // Clear messages (useful when switching chats)
+    clearMessages: (state) => {
+      state.messages = [];
     }
   },
   extraReducers: (builder) => {
@@ -342,6 +368,8 @@ const chatSlice = createSlice({
       .addCase(fetchMessages.pending, (state) => {
         state.isMessagesLoading = true;
         state.error = null;
+        // Clear messages when starting to fetch new ones
+        state.messages = [];
       })
       .addCase(fetchMessages.fulfilled, (state, action) => {
         state.isMessagesLoading = false;
@@ -516,5 +544,5 @@ const chatSlice = createSlice({
   },
 });
 
-export const { setSelectedContact, setSelectedGroup, clearChatState, addMessage, clearSearchResults, updateMessage, markMessageFailed } = chatSlice.actions;
+export const { setSelectedContact, setSelectedGroup, clearChatState, addMessage, clearSearchResults, updateMessage, markMessageFailed, clearMessages } = chatSlice.actions;
 export default chatSlice.reducer;

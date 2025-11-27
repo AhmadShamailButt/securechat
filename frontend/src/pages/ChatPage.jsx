@@ -5,7 +5,8 @@ import { useLocation, useParams, useNavigate } from 'react-router-dom';
 import ContactsSidebar from "../components/Chat/ContactsSidebar";
 import ChatArea from "../components/Chat/ChatArea";
 import EmptyChatState from "../components/Chat/EmptyChatState";
-import { fetchContacts, fetchMessages, sendMessage, setSelectedContact, setSelectedGroup, addMessage, getFriendRequests, fetchGroups, getGroupRequests } from '../store/slices/chatSlice';
+import ForwardMessageDialog from "../components/Chat/ForwardMessageDialog";
+import { fetchContacts, fetchMessages, sendMessage, setSelectedContact, setSelectedGroup, addMessage, getFriendRequests, fetchGroups, getGroupRequests, clearMessages } from '../store/slices/chatSlice';
 import { Button } from '../components/ui/Button';
 
 export default function ChatPage() {
@@ -18,6 +19,8 @@ export default function ChatPage() {
   const { userDetails: user } = useSelector((state) => state.user);
   const [activeId, setActiveId] = useState(null);
   const [processedMessageIds, setProcessedMessageIds] = useState(new Set());
+  const [isForwardDialogOpen, setIsForwardDialogOpen] = useState(false);
+  const [messageToForward, setMessageToForward] = useState(null);
 
   // Calculate active contact and group early so they can be used in effects
   const activeContact = selectedContact || contacts.find(c => c.id === activeId);
@@ -53,9 +56,14 @@ export default function ChatPage() {
         dispatch(setSelectedContact(contactToOpen));
         navigate(`/chat/${contactToOpen.id}`, { replace: true });
       }
+    } else {
+      // No active chat - clear selection
+      setActiveId(null);
+      dispatch(setSelectedContact(null));
+      dispatch(setSelectedGroup(null));
     }
     // Don't auto-select a contact by default - let user choose
-  }, [params.id, location.pathname, location.state, contacts, groups, activeId, dispatch, navigate]);
+  }, [params.id, location.pathname, location.state, contacts, groups, dispatch, navigate]);
 
   // Load contacts, friend requests, groups, and group requests using Redux on first mount
   useEffect(() => {
@@ -91,7 +99,14 @@ export default function ChatPage() {
 
   // Load messages when active contact changes using Redux (only for contacts, not groups)
   useEffect(() => {
-    if (!activeId || activeGroup) return; // Skip if it's a group
+    if (!activeId || activeGroup) {
+      // Clear messages if no active chat or if it's a group
+      dispatch(clearMessages());
+      setProcessedMessageIds(new Set());
+      return;
+    }
+    // Clear processed message IDs and fetch new messages
+    // Messages are automatically cleared in fetchMessages.pending
     setProcessedMessageIds(new Set());
     dispatch(fetchMessages(activeId));
   }, [activeId, dispatch, activeGroup]);
@@ -121,7 +136,7 @@ export default function ChatPage() {
     };
   }, [isConnected, activeId, socket, processedMessageIds, user, dispatch, activeGroup]);
 
-  const handleSend = async (e, messageText) => {
+  const handleSend = async (e, messageText, replyingTo = null) => {
     e.preventDefault();
     if (!messageText.trim() || !activeId || !isConnected || activeGroup) return; // Don't send messages for groups
     console.log('Sending message to conversation:', activeId);
@@ -130,18 +145,31 @@ export default function ChatPage() {
       id: tempId,
       conversationId: activeId,
       senderId: user?.id || 'me',
+      senderName: user?.name || user?.fullName || 'You',
       text: messageText.trim(),
+      replyingTo: replyingTo ? {
+        text: replyingTo.text,
+        id: replyingTo.id,
+        senderId: replyingTo.senderId,
+        senderName: replyingTo.senderName
+      } : null,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      fullTimestamp: new Date().toISOString(),
       pending: true
     };
     dispatch(addMessage(newMessage));
     
     try {
+      // If replying, include the reply info in the message text for backend
+      const textToSend = replyingTo 
+        ? `Replying to: ${replyingTo.text}\n${messageText.trim()}`
+        : messageText.trim();
+      
       const response = await dispatch(sendMessage({
         conversationId: activeId,
         messageData: {
           conversationId: activeId,
-          text: messageText.trim(),
+          text: textToSend,
           senderId: user?.id
         }
       }));
@@ -172,6 +200,11 @@ export default function ChatPage() {
       dispatch(setSelectedGroup(null)); // Clear group selection
       navigate(`/chat/${contactId}`, { replace: true });
     }
+  };
+
+  const handleForwardMessage = (message) => {
+    setMessageToForward(message);
+    setIsForwardDialogOpen(true);
   };
 
   if (isContactsLoading && contacts.length === 0) {
@@ -227,11 +260,21 @@ export default function ChatPage() {
             handleSend={handleSend}
             currentUserId={user?.id}
             isFriend={true} // Contacts list only shows accepted friends
+            onForwardMessage={handleForwardMessage}
+            currentUserName={user?.name || user?.fullName}
+            isGroupChat={false} // Personal chats don't show sender names
           />
         ) : (
           <EmptyChatState currentUserId={user?.id} />
         )}
       </div>
+
+      {/* Forward Message Dialog */}
+      <ForwardMessageDialog
+        open={isForwardDialogOpen}
+        onOpenChange={setIsForwardDialogOpen}
+        message={messageToForward}
+      />
     </div>
   );
 }
