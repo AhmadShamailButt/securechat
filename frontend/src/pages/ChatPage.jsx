@@ -1,47 +1,116 @@
 import React, { useEffect, useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { useSocket } from '../contexts/SocketContext';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useParams, useNavigate } from 'react-router-dom';
 import ContactsSidebar from "../components/Chat/ContactsSidebar";
 import ChatArea from "../components/Chat/ChatArea";
 import EmptyChatState from "../components/Chat/EmptyChatState";
-import { fetchContacts, fetchMessages, sendMessage, setSelectedContact, addMessage } from '../store/slices/chatSlice';
+import ForwardMessageDialog from "../components/Chat/ForwardMessageDialog";
+import { fetchContacts, fetchMessages, sendMessage, setSelectedContact, setSelectedGroup, addMessage, getFriendRequests, fetchGroups, getGroupRequests, clearMessages, markMessagesAsRead, markMessageAsRead, updateContactStatus } from '../store/slices/chatSlice';
 import { Button } from '../components/ui/Button';
 
 export default function ChatPage() {
   const location = useLocation();
+  const params = useParams();
+  const navigate = useNavigate();
   const dispatch = useDispatch();
   const { socket, isConnected, connectError, reconnect } = useSocket();
-  const { contacts, messages, selectedContact, isContactsLoading, isMessagesLoading } = useSelector((state) => state.chat);
+  const { contacts, messages, selectedContact, selectedGroup, groups, isContactsLoading, isMessagesLoading, friendRequests } = useSelector((state) => state.chat);
   const { userDetails: user } = useSelector((state) => state.user);
   const [activeId, setActiveId] = useState(null);
   const [processedMessageIds, setProcessedMessageIds] = useState(new Set());
+  const [isForwardDialogOpen, setIsForwardDialogOpen] = useState(false);
+  const [messageToForward, setMessageToForward] = useState(null);
 
-  // Check for activeConversation or userId in location state (from navigation)
+  // Calculate active contact and group early so they can be used in effects
+  const activeContact = selectedContact || contacts.find(c => c.id === activeId);
+  const activeGroup = selectedGroup || groups.find(g => g.id === activeId);
+
+  // Check URL params for group or contact ID
   useEffect(() => {
-    if (location.state?.activeConversation) {
+    if (params.id) {
+      // Check if it's a group route
+      if (location.pathname.includes('/group/')) {
+        const group = groups.find(g => g.id === params.id);
+        if (group) {
+          setActiveId(params.id);
+          dispatch(setSelectedGroup(group));
+          dispatch(setSelectedContact(null));
+        }
+      } else {
+        // It's a contact route
+        const contact = contacts.find(c => c.id === params.id);
+        if (contact) {
+          setActiveId(params.id);
+          dispatch(setSelectedContact(contact));
+          dispatch(setSelectedGroup(null));
+        }
+      }
+    } else if (location.state?.activeConversation) {
+      // Fallback to location state
       setActiveId(location.state.activeConversation);
     } else if (location.state?.userIdToOpenChat && contacts.length > 0) {
       const contactToOpen = contacts.find(contact => contact.id === location.state.userIdToOpenChat);
       if (contactToOpen) {
         setActiveId(contactToOpen.id);
         dispatch(setSelectedContact(contactToOpen));
+        navigate(`/chat/${contactToOpen.id}`, { replace: true });
       }
-    } else if (!activeId && contacts.length > 0) {
-      setActiveId(contacts[0].id);
-      dispatch(setSelectedContact(contacts[0]));
+    } else {
+      // No active chat - clear selection
+      setActiveId(null);
+      dispatch(setSelectedContact(null));
+      dispatch(setSelectedGroup(null));
     }
-  }, [location.state, contacts, activeId, dispatch]);
+    // Don't auto-select a contact by default - let user choose
+  }, [params.id, location.pathname, location.state, contacts, groups, dispatch, navigate]);
 
-  // Load contacts using Redux
+  // Load contacts, friend requests, groups, and group requests using Redux on first mount
   useEffect(() => {
     if (!user) return;
+    
+    // Always fetch on first load of chat page
     dispatch(fetchContacts());
-  }, [user, dispatch]);
+    dispatch(getFriendRequests());
+    dispatch(fetchGroups());
+    dispatch(getGroupRequests());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]); // Only depend on user to avoid infinite loops
 
-  // Join room effect
+  // Emit user online status when connected and join user-specific room
   useEffect(() => {
-    if (!activeId || !isConnected || !socket) return;
+    if (isConnected && socket && user?.id) {
+      socket.emit('userOnline', { userId: user.id });
+      // Join user-specific room for receiving read receipts
+      socket.emit('join', {
+        conversationId: user.id, // Use user ID as room ID for user-specific room
+        userId: user.id
+      });
+    }
+  }, [isConnected, socket, user]);
+
+  // Listen for user status changes (online/offline)
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleUserStatusChanged = (data) => {
+      dispatch(updateContactStatus({
+        userId: data.userId,
+        isOnline: data.isOnline,
+        lastSeen: data.lastSeen
+      }));
+    };
+
+    socket.on('userStatusChanged', handleUserStatusChanged);
+
+    return () => {
+      socket.off('userStatusChanged', handleUserStatusChanged);
+    };
+  }, [socket, dispatch]);
+
+  // Join room effect (only for contacts, not groups)
+  useEffect(() => {
+    if (!activeId || !isConnected || !socket || activeGroup) return; // Skip if it's a group
     console.log('Joining room for conversation:', activeId);
     socket.emit('join', {
       conversationId: activeId,
@@ -57,18 +126,47 @@ export default function ChatPage() {
     return () => {
       socket.off('joined', handleJoined);
     };
-  }, [activeId, isConnected, socket, user]);
+  }, [activeId, isConnected, socket, user, activeGroup]);
 
-  // Load messages when active contact changes using Redux
+  // Load messages when active contact changes using Redux (only for contacts, not groups)
   useEffect(() => {
-    if (!activeId) return;
+    if (!activeId || activeGroup) {
+      // Clear messages if no active chat or if it's a group
+      dispatch(clearMessages());
+      setProcessedMessageIds(new Set());
+      return;
+    }
+    // Clear processed message IDs and fetch new messages
+    // Messages are automatically cleared in fetchMessages.pending
     setProcessedMessageIds(new Set());
     dispatch(fetchMessages(activeId));
-  }, [activeId, dispatch]);
+  }, [activeId, dispatch, activeGroup]);
 
-  // Listen for new messages
+  // Mark messages as read when viewing the conversation
   useEffect(() => {
-    if (!isConnected || !activeId || !socket) return;
+    if (!activeId || activeGroup || !messages.length) return;
+    
+    // Get unread messages sent by the other person
+    const unreadMessages = messages.filter(
+      msg => msg.conversationId === activeId && 
+              msg.senderId !== 'me' && 
+              msg.senderId !== user?.id && 
+              !msg.read &&
+              !msg.pending
+    );
+
+    if (unreadMessages.length > 0) {
+      const messageIds = unreadMessages.map(msg => msg.id);
+      dispatch(markMessagesAsRead({ 
+        conversationId: activeId, 
+        messageIds 
+      }));
+    }
+  }, [activeId, messages, activeGroup, dispatch, user]);
+
+  // Listen for new messages (only for contacts, not groups)
+  useEffect(() => {
+    if (!isConnected || !activeId || !socket || activeGroup) return; // Skip if it's a group
     const handleNewMessage = (msg) => {
       console.log('New message received:', msg);
       if (msg.conversationId !== activeId) {
@@ -85,33 +183,97 @@ export default function ChatPage() {
         dispatch(addMessage(msg));
       }
     };
+    
+    // Listen for read receipts
+    const handleMessagesRead = (readReceipt) => {
+      console.log('Read receipt received:', readReceipt);
+      console.log('Current activeId:', activeId);
+      console.log('Read receipt conversationId:', readReceipt.conversationId);
+      
+      // Check if this read receipt is for the current conversation
+      const isForCurrentConversation = readReceipt.conversationId === activeId || 
+                                       readReceipt.conversationId?.toString() === activeId?.toString();
+      
+      if (isForCurrentConversation) {
+        if (readReceipt.messageIds && readReceipt.messageIds.length > 0) {
+          console.log('Marking specific messages as read:', readReceipt.messageIds);
+          console.log('Current messages in state:', messages.map(m => ({ id: m.id, read: m.read, senderId: m.senderId })));
+          
+          readReceipt.messageIds.forEach(messageId => {
+            const messageIdStr = messageId.toString();
+            // Find message by ID (handle both string and ObjectId formats)
+            const message = messages.find(msg => 
+              msg.id === messageIdStr || 
+              msg.id === messageId || 
+              msg.id?.toString() === messageIdStr
+            );
+            
+            if (message && message.senderId === 'me' && !message.read) {
+              console.log('Marking message as read:', messageIdStr);
+              dispatch(markMessageAsRead({ messageId: message.id }));
+            } else {
+              console.log('Message not found or already read:', messageIdStr, message);
+            }
+          });
+        } else {
+          // Mark all messages in conversation as read
+          console.log('Marking all messages in conversation as read');
+          messages.forEach(msg => {
+            if (msg.conversationId === activeId && msg.senderId === 'me' && !msg.read) {
+              console.log('Marking message as read:', msg.id);
+              dispatch(markMessageAsRead({ messageId: msg.id }));
+            }
+          });
+        }
+      } else {
+        console.log('Read receipt is for a different conversation, ignoring');
+      }
+    };
+
     socket.on('newMessage', handleNewMessage);
+    socket.on('messagesRead', handleMessagesRead);
+    
     return () => {
       socket.off('newMessage', handleNewMessage);
+      socket.off('messagesRead', handleMessagesRead);
     };
-  }, [isConnected, activeId, socket, processedMessageIds, user, dispatch]);
+  }, [isConnected, activeId, socket, processedMessageIds, user, dispatch, activeGroup, messages]);
 
-  const handleSend = async (e, messageText) => {
+  const handleSend = async (e, messageText, replyingTo = null) => {
     e.preventDefault();
-    if (!messageText.trim() || !activeId || !isConnected) return;
+    if (!messageText.trim() || !activeId || !isConnected || activeGroup) return; // Don't send messages for groups
     console.log('Sending message to conversation:', activeId);
     const tempId = `temp-${Date.now()}`;
     const newMessage = {
       id: tempId,
       conversationId: activeId,
       senderId: user?.id || 'me',
+      senderName: user?.name || user?.fullName || 'You',
       text: messageText.trim(),
+      replyingTo: replyingTo ? {
+        text: replyingTo.text,
+        id: replyingTo.id,
+        senderId: replyingTo.senderId,
+        senderName: replyingTo.senderName
+      } : null,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      pending: true
+      fullTimestamp: new Date().toISOString(),
+      pending: true,
+      read: false // Default to unread when sending
     };
     dispatch(addMessage(newMessage));
     
     try {
+      // If replying, include the reply info in the message text for backend
+      const textToSend = replyingTo 
+        ? `Replying to: ${replyingTo.text}\n${messageText.trim()}`
+        : messageText.trim();
+      
       const response = await dispatch(sendMessage({
         conversationId: activeId,
         messageData: {
           conversationId: activeId,
-          text: messageText.trim(),
+          text: textToSend,
           senderId: user?.id
         }
       }));
@@ -124,14 +286,29 @@ export default function ChatPage() {
     }
   };
 
-  const activeContact = selectedContact || contacts.find(c => c.id === activeId);
-
   const handleContactClick = (contactId) => {
+    // Check if it's a group or contact
+    const group = groups.find(g => g.id === contactId);
     const contact = contacts.find(c => c.id === contactId);
-    if (contact) {
+    
+    if (group) {
+      // It's a group - navigate to group route
+      setActiveId(contactId);
+      dispatch(setSelectedGroup(group));
+      dispatch(setSelectedContact(null)); // Clear contact selection
+      navigate(`/chat/group/${contactId}`, { replace: true });
+    } else if (contact) {
+      // It's a contact - navigate to contact route
       setActiveId(contactId);
       dispatch(setSelectedContact(contact));
+      dispatch(setSelectedGroup(null)); // Clear group selection
+      navigate(`/chat/${contactId}`, { replace: true });
     }
+  };
+
+  const handleForwardMessage = (message) => {
+    setMessageToForward(message);
+    setIsForwardDialogOpen(true);
   };
 
   if (isContactsLoading && contacts.length === 0) {
@@ -157,7 +334,27 @@ export default function ChatPage() {
         />
 
         {/* Chat Area or Empty State */}
-        {activeContact ? (
+        {activeGroup ? (
+          <div className="flex-1 flex flex-col items-center justify-center bg-background p-8">
+            <div className="text-center max-w-md">
+              <div className="h-20 w-20 rounded-full bg-primary/20 flex items-center justify-center mx-auto mb-4">
+                <svg className="h-10 w-10 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                </svg>
+              </div>
+              <h2 className="text-2xl font-semibold text-foreground mb-2">{activeGroup.name}</h2>
+              {activeGroup.description && (
+                <p className="text-muted-foreground mb-4">{activeGroup.description}</p>
+              )}
+              <p className="text-sm text-muted-foreground mb-6">
+                {activeGroup.memberCount} {activeGroup.memberCount === 1 ? 'member' : 'members'}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                Group messaging functionality coming soon...
+              </p>
+            </div>
+          </div>
+        ) : activeContact ? (
           <ChatArea
             activeContact={activeContact}
             messages={messages}
@@ -166,11 +363,22 @@ export default function ChatPage() {
             connectError={connectError}
             handleSend={handleSend}
             currentUserId={user?.id}
+            isFriend={true} // Contacts list only shows accepted friends
+            onForwardMessage={handleForwardMessage}
+            currentUserName={user?.name || user?.fullName}
+            isGroupChat={false} // Personal chats don't show sender names
           />
         ) : (
-          <EmptyChatState />
+          <EmptyChatState currentUserId={user?.id} />
         )}
       </div>
+
+      {/* Forward Message Dialog */}
+      <ForwardMessageDialog
+        open={isForwardDialogOpen}
+        onOpenChange={setIsForwardDialogOpen}
+        message={messageToForward}
+      />
     </div>
   );
 }

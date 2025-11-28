@@ -10,7 +10,8 @@ const authMiddleware = require('../middleware/authMiddleware');
 // Search users globally (e.g., /api/users/search?query=Ali)
 router.get('/users/search', authMiddleware, contactsController.searchUsers);
 
-// Add a user to contacts (e.g., POST /api/contacts/add)
+// DEPRECATED: Add a user to contacts - now use /api/friends/add instead
+// Kept for backward compatibility
 router.post('/contacts/add', authMiddleware, contactsController.addContact);
 
 
@@ -27,6 +28,12 @@ router.get('/messages/:conversationId', messageController.getMessages);
 
 // Send a message
 router.post('/messages', messageController.postMessage);
+
+// Forward a message
+router.post('/messages/forward', messageController.forwardMessage);
+
+// Mark messages as read
+router.post('/messages/read', messageController.markAsRead);
 
 // Create or get conversation (Alternative method often used for direct linking)
 router.get('/messages/conversation/:userId', messageController.getOrCreateConversation);

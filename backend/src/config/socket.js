@@ -1,4 +1,7 @@
 const socketIo = require("socket.io");
+const User = require("../models/User");
+const mongoose = require("mongoose");
+const { isConnected } = require("./database");
 let io;
 
 exports.init = (server, corsOptions) => {
@@ -17,6 +20,43 @@ exports.init = (server, corsOptions) => {
     // Track socket's user identifier
     let socketUser = null;
 
+    // Handle user online status
+    socket.on("userOnline", async (data) => {
+      const userId = data.userId;
+      if (!userId) return;
+
+      // Wait for MongoDB connection with retry
+      const updateUserStatus = async (retries = 5) => {
+        if (isConnected() || mongoose.connection.readyState === 1) {
+          try {
+            // Update user's online status
+            await User.findByIdAndUpdate(userId, {
+              isOnline: true,
+              lastSeen: new Date()
+            });
+
+            // Notify all other users that this user is now online
+            socket.broadcast.emit("userStatusChanged", {
+              userId: userId,
+              isOnline: true,
+              lastSeen: new Date()
+            });
+
+            console.log(`User ${userId} is now online`);
+          } catch (error) {
+            console.error("Error updating user online status:", error);
+          }
+        } else if (retries > 0) {
+          // Retry after 500ms if MongoDB is not connected yet
+          setTimeout(() => updateUserStatus(retries - 1), 500);
+        } else {
+          console.log("MongoDB not connected after retries, skipping user online status update");
+        }
+      };
+
+      updateUserStatus();
+    });
+
     socket.on("join", (data) => {
       // Handle joining with user information
       const conversationId = data.conversationId || data;
@@ -33,6 +73,36 @@ exports.init = (server, corsOptions) => {
       if (userId) {
         socketUser = userId;
         console.log(`Socket ${socket.id} associated with user ${userId}`);
+        
+        // Join user-specific room for receiving read receipts and status updates
+        socket.join(userId.toString());
+        console.log(`Socket ${socket.id} joined user room: ${userId}`);
+        
+        // Mark user as online when they join (with retry if MongoDB not ready)
+        const updateStatusOnJoin = async (retries = 5) => {
+          if (isConnected() || mongoose.connection.readyState === 1) {
+            try {
+              await User.findByIdAndUpdate(userId, {
+                isOnline: true,
+                lastSeen: new Date()
+              });
+              
+              // Notify all other users
+              socket.broadcast.emit("userStatusChanged", {
+                userId: userId,
+                isOnline: true,
+                lastSeen: new Date()
+              });
+            } catch (err) {
+              console.error("Error updating user online status on join:", err);
+            }
+          } else if (retries > 0) {
+            // Retry after 500ms if MongoDB is not connected yet
+            setTimeout(() => updateStatusOnJoin(retries - 1), 500);
+          }
+        };
+        
+        updateStatusOnJoin();
       }
       
       // Add to our tracking set
@@ -61,8 +131,30 @@ exports.init = (server, corsOptions) => {
       socket.broadcast.to(conversationId).emit("newMessage", msg);
     });
 
-    socket.on("disconnect", () => {
+    socket.on("disconnect", async () => {
       console.log("Client disconnected:", socket.id);
+      
+      // Mark user as offline if we have their userId (only if MongoDB is connected)
+      if (socketUser && (isConnected() || mongoose.connection.readyState === 1)) {
+        try {
+          await User.findByIdAndUpdate(socketUser, {
+            isOnline: false,
+            lastSeen: new Date()
+          });
+
+          // Notify all other users that this user is now offline
+          socket.broadcast.emit("userStatusChanged", {
+            userId: socketUser,
+            isOnline: false,
+            lastSeen: new Date()
+          });
+
+          console.log(`User ${socketUser} is now offline`);
+        } catch (error) {
+          console.error("Error updating user offline status:", error);
+        }
+      }
+      
       // Clean up our tracking
       joinedRooms.clear();
       socketUser = null;

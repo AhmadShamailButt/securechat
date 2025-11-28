@@ -16,9 +16,32 @@ export default function ChatHeader({ activeContact }) {
           )}
         </div>
         <div>
-          <h3 className="font-medium text-foreground">{activeContact.name}</h3>
+          <h3 className="font-medium text-foreground">{activeContact.name || activeContact.fullName}</h3>
           <p className="text-xs text-muted-foreground">
-            {activeContact.isOnline ? 'Online' : activeContact.lastSeen}
+            {activeContact.isOnline ? (
+              'Online'
+            ) : activeContact.lastSeen ? (
+              (() => {
+                try {
+                  const lastSeenDate = new Date(activeContact.lastSeen);
+                  const now = new Date();
+                  const diffMs = now - lastSeenDate;
+                  const diffMins = Math.floor(diffMs / 60000);
+                  const diffHours = Math.floor(diffMs / 3600000);
+                  const diffDays = Math.floor(diffMs / 86400000);
+
+                  if (diffMins < 1) return 'Just now';
+                  if (diffMins < 60) return `${diffMins} minute${diffMins > 1 ? 's' : ''} ago`;
+                  if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+                  if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+                  return lastSeenDate.toLocaleDateString();
+                } catch (e) {
+                  return 'Offline';
+                }
+              })()
+            ) : (
+              'Offline'
+            )}
           </p>
         </div>
       </div>
