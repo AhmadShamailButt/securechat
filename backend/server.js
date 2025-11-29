@@ -20,7 +20,7 @@ connectDB();
 
 const app = express();
 const server = http.createServer(app);
-
+console.log("Cors origin")
 // Allow multiple localhost ports for development
 const allowedOrigins = process.env.CORS_ORIGIN 
   ? process.env.CORS_ORIGIN.split(',')
