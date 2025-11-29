@@ -55,19 +55,3 @@ api.interceptors.response.use(
 
 export default api;
 
-
-          });
-        });
-      }
-      
-      // Redirect to login page
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login';
-      }
-    }
-    return Promise.reject(error);
-  }
-);
-
-export default api;
-

@@ -10,6 +10,7 @@ class CryptoService {
   constructor() {
     this.keyPair = null;
     this.sharedKeys = new Map(); // Map of userId -> derived encryption key
+    this.groupKeys = new Map(); // Map of groupId -> group AES key
   }
 
   /**
@@ -231,10 +232,201 @@ class CryptoService {
   }
 
   /**
+   * Generate a new random AES-GCM key for group encryption
+   * This key will be shared among all group members (encrypted for each)
+   */
+  async generateGroupKey() {
+    try {
+      const groupKey = await window.crypto.subtle.generateKey(
+        {
+          name: 'AES-GCM',
+          length: 256,
+        },
+        true, // extractable - we need to export it to encrypt for each member
+        ['encrypt', 'decrypt']
+      );
+
+      console.log('🔑 Generated new group encryption key');
+      return groupKey;
+    } catch (error) {
+      console.error('Failed to generate group key:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Export AES key to raw format (for encrypting with member's public key)
+   */
+  async exportGroupKey(groupKey) {
+    try {
+      const exported = await window.crypto.subtle.exportKey('raw', groupKey);
+      return this.arrayBufferToBase64(exported);
+    } catch (error) {
+      console.error('Failed to export group key:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Import raw AES key (after decrypting with private key)
+   */
+  async importGroupKey(groupKeyBase64) {
+    try {
+      const keyData = this.base64ToArrayBuffer(groupKeyBase64);
+
+      const importedKey = await window.crypto.subtle.importKey(
+        'raw',
+        keyData,
+        {
+          name: 'AES-GCM',
+        },
+        false, // not extractable once imported
+        ['encrypt', 'decrypt']
+      );
+
+      return importedKey;
+    } catch (error) {
+      console.error('Failed to import group key:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Encrypt the group key with a member's ECDH public key
+   * This allows each member to decrypt the group key with their private key
+   */
+  async encryptGroupKeyForMember(groupKey, memberPublicKeyBase64, memberId) {
+    try {
+      // Derive shared key with the member using ECDH
+      const sharedKey = await this.deriveSharedKey(memberPublicKeyBase64, memberId);
+
+      // Export the group key to raw bytes
+      const groupKeyRaw = await window.crypto.subtle.exportKey('raw', groupKey);
+
+      // Encrypt the raw group key using the shared key
+      const iv = window.crypto.getRandomValues(new Uint8Array(12));
+
+      const encryptedBuffer = await window.crypto.subtle.encrypt(
+        {
+          name: 'AES-GCM',
+          iv: iv,
+          tagLength: 128,
+        },
+        sharedKey,
+        groupKeyRaw
+      );
+
+      // Split ciphertext and auth tag
+      const ciphertext = encryptedBuffer.slice(0, -16);
+      const authTag = encryptedBuffer.slice(-16);
+
+      return {
+        encryptedGroupKey: this.arrayBufferToBase64(ciphertext),
+        iv: this.arrayBufferToBase64(iv),
+        authTag: this.arrayBufferToBase64(authTag),
+      };
+    } catch (error) {
+      console.error('Failed to encrypt group key for member:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Decrypt the group key using our private key
+   * The group key was encrypted with our public key by another member
+   */
+  async decryptGroupKey(encryptedGroupKeyData, senderPublicKeyBase64, senderId, groupId) {
+    try {
+      // Check if we already have this group key cached
+      if (this.groupKeys.has(groupId)) {
+        return this.groupKeys.get(groupId);
+      }
+
+      const { encryptedGroupKey, iv, authTag } = encryptedGroupKeyData;
+
+      // Derive shared key with the sender
+      const sharedKey = await this.deriveSharedKey(senderPublicKeyBase64, senderId);
+
+      // Convert from base64
+      const ciphertextBuffer = this.base64ToArrayBuffer(encryptedGroupKey);
+      const ivBuffer = this.base64ToArrayBuffer(iv);
+      const authTagBuffer = this.base64ToArrayBuffer(authTag);
+
+      // Combine ciphertext and auth tag
+      const combinedBuffer = new Uint8Array(
+        ciphertextBuffer.byteLength + authTagBuffer.byteLength
+      );
+      combinedBuffer.set(new Uint8Array(ciphertextBuffer), 0);
+      combinedBuffer.set(new Uint8Array(authTagBuffer), ciphertextBuffer.byteLength);
+
+      // Decrypt to get the raw group key
+      const groupKeyRaw = await window.crypto.subtle.decrypt(
+        {
+          name: 'AES-GCM',
+          iv: ivBuffer,
+          tagLength: 128,
+        },
+        sharedKey,
+        combinedBuffer
+      );
+
+      // Import the raw group key
+      const groupKey = await window.crypto.subtle.importKey(
+        'raw',
+        groupKeyRaw,
+        {
+          name: 'AES-GCM',
+        },
+        false,
+        ['encrypt', 'decrypt']
+      );
+
+      // Cache the group key
+      this.groupKeys.set(groupId, groupKey);
+      console.log(`🔑 Decrypted and cached group key for group: ${groupId}`);
+
+      return groupKey;
+    } catch (error) {
+      console.error('Failed to decrypt group key:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Encrypt a message for a group using the group's shared key
+   */
+  async encryptGroupMessage(plaintext, groupKey) {
+    return await this.encryptMessage(plaintext, groupKey);
+  }
+
+  /**
+   * Decrypt a group message using the group's shared key
+   */
+  async decryptGroupMessage(encryptedData, groupKey) {
+    return await this.decryptMessage(encryptedData, groupKey);
+  }
+
+  /**
+   * Get cached group key
+   */
+  getGroupKey(groupId) {
+    return this.groupKeys.get(groupId);
+  }
+
+  /**
+   * Cache a group key
+   */
+  setGroupKey(groupId, groupKey) {
+    this.groupKeys.set(groupId, groupKey);
+    console.log(`🔑 Cached group key for group: ${groupId}`);
+  }
+
+  /**
    * Clear cached keys (call on logout)
    */
   clearKeys() {
     this.sharedKeys.clear();
+    this.groupKeys.clear();
     this.keyPair = null;
     console.log('🔒 Crypto keys cleared');
   }

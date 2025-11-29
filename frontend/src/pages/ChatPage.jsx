@@ -27,6 +27,7 @@ import {
   fetchCallHistory
 } from '../store/slices/voiceCallSlice';
 import useVoiceCall from '../hooks/useVoiceCall';
+import useGroupMessages from '../hooks/useGroupMessages';
 import { Button } from '../components/ui/Button';
 import axiosInstance from '../store/axiosInstance';
 
@@ -97,6 +98,15 @@ export default function ChatPage() {
   // Calculate active contact and group early
   const activeContact = selectedContact || contacts.find(c => c.id === activeId);
   const activeGroup = selectedGroup || groups.find(g => g.id === activeId);
+
+  // Initialize group messaging hook
+  const {
+    messages: groupMessagesData,
+    decryptedMessages: decryptedGroupMessages,
+    isLoading: isGroupMessagesLoading,
+    sendMessage: sendGroupMessage,
+    isJoinedGroup
+  } = useGroupMessages(socket, activeGroup, user, isCryptoInitialized);
 
   // Check URL params for group or contact ID
   useEffect(() => {
@@ -804,25 +814,27 @@ export default function ChatPage() {
         />
 
         {activeGroup ? (
-          <div className="flex-1 flex flex-col items-center justify-center bg-background p-8">
-            <div className="text-center max-w-md">
-              <div className="h-20 w-20 rounded-full bg-primary/20 flex items-center justify-center mx-auto mb-4">
-                <svg className="h-10 w-10 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                </svg>
-              </div>
-              <h2 className="text-2xl font-semibold text-foreground mb-2">{activeGroup.name}</h2>
-              {activeGroup.description && (
-                <p className="text-muted-foreground mb-4">{activeGroup.description}</p>
-              )}
-              <p className="text-sm text-muted-foreground mb-6">
-                {activeGroup.memberCount} {activeGroup.memberCount === 1 ? 'member' : 'members'}
-              </p>
-              <p className="text-sm text-muted-foreground">
-                Group messaging functionality coming soon...
-              </p>
-            </div>
-          </div>
+          <ChatArea
+            activeContact={activeGroup}
+            messages={groupMessagesData.map(msg => ({
+              ...msg,
+              text: msg.isEncrypted && decryptedGroupMessages[msg.id]
+                ? decryptedGroupMessages[msg.id]
+                : msg.text
+            }))}
+            loading={isGroupMessagesLoading}
+            isConnected={isConnected && isJoinedGroup}
+            connectError={connectError}
+            handleSend={async (e, text) => {
+              e.preventDefault();
+              await sendGroupMessage(text);
+            }}
+            currentUserId={user?.id}
+            isFriend={true}
+            onForwardMessage={handleForwardMessage}
+            currentUserName={user?.name || user?.fullName}
+            isGroupChat={true}
+          />
         ) : activeContact ? (
           <ChatArea
             activeContact={activeContact}
