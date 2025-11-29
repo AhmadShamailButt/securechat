@@ -117,9 +117,12 @@ export const useRingingTone = (isPlaying) => {
       }
       if (audioContextRef.current) {
         try {
-          audioContextRef.current.close();
+          // Check if AudioContext is not already closed
+          if (audioContextRef.current.state !== 'closed') {
+            audioContextRef.current.close();
+          }
         } catch (e) {
-          // Ignore errors
+          // Ignore errors (context might already be closed)
         }
         audioContextRef.current = null;
       }
@@ -173,9 +176,12 @@ export const useCallingTone = (isPlaying) => {
       }
       if (audioContextRef.current) {
         try {
-          audioContextRef.current.close();
+          // Check if AudioContext is not already closed
+          if (audioContextRef.current.state !== 'closed') {
+            audioContextRef.current.close();
+          }
         } catch (e) {
-          // Ignore errors
+          // Ignore errors (context might already be closed)
         }
         audioContextRef.current = null;
       }

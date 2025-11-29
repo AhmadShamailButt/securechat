@@ -86,6 +86,7 @@ export default function ChatPage() {
     answerCall: answerWebRTCCall,
     endCall: endWebRTCCall,
     toggleMute: toggleWebRTCMute,
+    isEncrypted: isCallEncrypted,
   } = useVoiceCall(
     socket,
     activeCall?.callId,
@@ -204,8 +205,11 @@ export default function ChatPage() {
           newDecrypted[msg.id] = decrypted;
           console.log(`✅ Decrypted message ${msg.id}`);
         } catch (error) {
-          console.error(`❌ Failed to decrypt message ${msg.id}:`, error);
-          newDecrypted[msg.id] = '[Decryption failed]';
+          // Only log error once per message to avoid console spam
+          if (!decryptedMessages[msg.id] || decryptedMessages[msg.id] !== '[Decryption failed]') {
+            console.warn(`⚠️ Cannot decrypt message ${msg.id}. This may be an old message encrypted with a different key.`);
+          }
+          newDecrypted[msg.id] = '[Decryption failed - Old message format]';
         }
       }
 
@@ -783,6 +787,7 @@ export default function ChatPage() {
         duration={activeCall?.duration || 0}
         isMuted={activeCall?.isMuted || false}
         isSpeakerOn={activeCall?.isSpeakerOn || false}
+        isEncrypted={isCallEncrypted || false}
         onToggleMute={handleToggleMute}
         onToggleSpeaker={handleToggleSpeaker}
         onEndCall={handleEndCall}

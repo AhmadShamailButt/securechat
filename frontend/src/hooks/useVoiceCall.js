@@ -1,4 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
+import { useCrypto } from '../contexts/CryptoContext';
+import { toast } from 'react-hot-toast';
 
 const ICE_SERVERS = {
   iceServers: [
@@ -12,6 +14,10 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
   const [remoteStream, setRemoteStream] = useState(null);
   const [isMuted, setIsMuted] = useState(false);
   const [error, setError] = useState(null);
+  const [isEncrypted, setIsEncrypted] = useState(false);
+  
+  // Crypto context for encryption
+  const { encryptMessage, decryptMessage, isInitialized: isCryptoInitialized, getUserPublicKey } = useCrypto();
 
   // WebRTC state machine
   const [webrtcState, setWebrtcState] = useState('idle');
@@ -30,6 +36,8 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
   const pendingCandidatesRef = useRef([]);
   const pendingOfferRef = useRef(null);
   const shouldAnswerRef = useRef(false);
+  const recipientPublicKeyRef = useRef(null);
+  const encryptionEnabledRef = useRef(false);
 
   // Timeout refs (Fix 4)
   const offerTimeoutRef = useRef(null);
@@ -59,6 +67,62 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
     }
   }, [remoteStream]);
 
+  // Helper function to encrypt signaling data
+  const encryptSignalingData = useCallback(async (data, recipientId) => {
+    try {
+      if (!isCryptoInitialized) {
+        console.warn('[ENCRYPTION] Crypto not initialized, sending unencrypted');
+        return { encrypted: false, data };
+      }
+
+      if (!encryptionEnabledRef.current) {
+        console.warn('[ENCRYPTION] Encryption disabled, sending unencrypted');
+        return { encrypted: false, data };
+      }
+
+      // Serialize the data to JSON string
+      const jsonString = JSON.stringify(data);
+      
+      // Encrypt using the crypto service
+      const encrypted = await encryptMessage(jsonString, recipientId);
+      
+      return {
+        encrypted: true,
+        encryptedData: encrypted,
+        isEncrypted: true
+      };
+    } catch (err) {
+      console.error('[ENCRYPTION] Failed to encrypt signaling data:', err);
+      // Fallback to unencrypted if encryption fails
+      return { encrypted: false, data, encryptionError: err.message };
+    }
+  }, [encryptMessage, isCryptoInitialized]);
+
+  // Helper function to decrypt signaling data
+  const decryptSignalingData = useCallback(async (encryptedPayload, senderId) => {
+    try {
+      // Check if payload is encrypted
+      if (!encryptedPayload.isEncrypted || !encryptedPayload.encryptedData) {
+        // Legacy unencrypted format
+        return encryptedPayload.offer || encryptedPayload.answer || encryptedPayload.candidate;
+      }
+
+      if (!isCryptoInitialized) {
+        throw new Error('Crypto not initialized, cannot decrypt');
+      }
+
+      // Decrypt using the crypto service
+      const decryptedJson = await decryptMessage(encryptedPayload.encryptedData, senderId);
+      
+      // Parse JSON back to object
+      const decrypted = JSON.parse(decryptedJson);
+      return decrypted;
+    } catch (err) {
+      console.error('[ENCRYPTION] Failed to decrypt signaling data:', err);
+      throw new Error('Failed to decrypt signaling message: ' + err.message);
+    }
+  }, [decryptMessage, isCryptoInitialized]);
+
   // Initialize peer connection
   const initializePeerConnection = useCallback(() => {
     if (peerConnectionRef.current) {
@@ -68,14 +132,55 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
     const pc = new RTCPeerConnection(ICE_SERVERS);
 
     // Handle ICE candidates
-    pc.onicecandidate = (event) => {
-      if (event.candidate && socket && callId) {
-        // Always send to the other person (receiverId is always the other person's ID)
+    pc.onicecandidate = async (event) => {
+      // Skip null candidates (end-of-candidates marker)
+      if (!event.candidate || !socket || !callId) {
+        return;
+      }
+
+      try {
+        // Serialize ICE candidate manually (it doesn't have toJSON)
+        const candidateData = {
+          candidate: event.candidate.candidate,
+          sdpMid: event.candidate.sdpMid,
+          sdpMLineIndex: event.candidate.sdpMLineIndex,
+          usernameFragment: event.candidate.usernameFragment
+        };
+        
+        // Only encrypt if encryption is enabled
+        if (encryptionEnabledRef.current) {
+          const encryptedPayload = await encryptSignalingData(candidateData, receiverId);
+          socket.emit('voice-call:ice-candidate', {
+            ...encryptedPayload,
+            callId,
+            from: callerId,
+            to: receiverId
+          });
+        } else {
+          // Send unencrypted
+          socket.emit('voice-call:ice-candidate', {
+            candidate: candidateData,
+            callId,
+            from: callerId,
+            to: receiverId,
+            encrypted: false
+          });
+        }
+      } catch (err) {
+        console.error('[WEBRTC] Failed to encrypt ICE candidate:', err);
+        // Fallback to unencrypted
+        const candidateData = {
+          candidate: event.candidate.candidate,
+          sdpMid: event.candidate.sdpMid,
+          sdpMLineIndex: event.candidate.sdpMLineIndex,
+          usernameFragment: event.candidate.usernameFragment
+        };
         socket.emit('voice-call:ice-candidate', {
-          candidate: event.candidate,
+          candidate: candidateData,
           callId,
-          from: callerId, // Always use callerId (current user's ID) as 'from'
-          to: receiverId  // Always send to receiverId (the other person's ID)
+          from: callerId,
+          to: receiverId,
+          encrypted: false
         });
       }
     };
@@ -187,6 +292,28 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       console.log('[WEBRTC-CALLER] Starting call as initiator...');
       console.log('[WEBRTC-CALLER] Call params:', { callId, callerId, receiverId });
 
+      // Check if encryption is available
+      let encryptionAvailable = false;
+      if (isCryptoInitialized && receiverId) {
+        try {
+          const recipientKey = await getUserPublicKey(receiverId);
+          recipientPublicKeyRef.current = recipientKey;
+          encryptionEnabledRef.current = true;
+          encryptionAvailable = true;
+          setIsEncrypted(true);
+          console.log('[ENCRYPTION] Encryption enabled for call');
+        } catch (err) {
+          console.warn('[ENCRYPTION] Recipient encryption not available:', err.message);
+          encryptionEnabledRef.current = false;
+          setIsEncrypted(false);
+          // Show user-friendly warning (non-blocking)
+          toast('Encryption unavailable: Recipient has not set up encryption. Call will proceed unencrypted.', {
+            icon: '⚠️',
+            duration: 4000
+          });
+        }
+      }
+
       // Fix 2: Set state to getting_media
       setWebrtcState('getting_media');
 
@@ -210,12 +337,39 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       await pc.setLocalDescription(offer);
       console.log('[WEBRTC-CALLER] Created and set local description (offer)');
 
-      socket.emit('voice-call:offer', {
-        offer,
-        callId,
-        from: callerId,
-        to: receiverId
-      });
+      // Encrypt offer before sending
+      try {
+        // Serialize RTCSessionDescription manually (it doesn't have toJSON)
+        const offerData = {
+          type: offer.type,
+          sdp: offer.sdp
+        };
+        const encryptedPayload = await encryptSignalingData(offerData, receiverId);
+        
+        socket.emit('voice-call:offer', {
+          ...encryptedPayload,
+          callId,
+          from: callerId,
+          to: receiverId
+        });
+        
+        console.log('[WEBRTC-CALLER] Encrypted offer sent to:', receiverId);
+      } catch (encryptErr) {
+        console.error('[ENCRYPTION] Failed to encrypt offer, sending unencrypted:', encryptErr);
+        // Fallback to unencrypted - serialize offer
+        socket.emit('voice-call:offer', {
+          offer: {
+            type: offer.type,
+            sdp: offer.sdp
+          },
+          callId,
+          from: callerId,
+          to: receiverId,
+          encrypted: false
+        });
+        setIsEncrypted(false);
+        toast.error('Encryption failed. Call proceeding without encryption.');
+      }
 
       // Fix 2: Set state to offer_sent
       setWebrtcState('offer_sent');
@@ -235,14 +389,14 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       setWebrtcState('failed');
       setError(err.message);
     }
-  }, [getLocalStream, initializePeerConnection, socket, callId, callerId, receiverId]);
+  }, [getLocalStream, initializePeerConnection, socket, callId, callerId, receiverId, isCryptoInitialized, getUserPublicKey, encryptSignalingData]);
 
   // Answer call (as receiver)
-  const answerCall = useCallback(async (offer = null) => {
+  const answerCall = useCallback(async (encryptedOfferPayload = null) => {
     try {
       // Use provided offer or pending offer
-      const offerToUse = offer || pendingOfferRef.current;
-      if (!offerToUse) {
+      const offerPayloadToUse = encryptedOfferPayload || pendingOfferRef.current;
+      if (!offerPayloadToUse) {
         console.log('[WEBRTC-RECEIVER] No offer available yet, will answer when offer arrives');
         // Mark that we should answer when offer arrives
         shouldAnswerRef.current = true;
@@ -256,9 +410,70 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       // Fix 2: State validation - defer if still getting media
       if (webrtcState === 'getting_media') {
         console.log('[WEBRTC-RECEIVER] Still getting media, will retry when ready');
-        pendingOfferRef.current = offerToUse;
+        pendingOfferRef.current = offerPayloadToUse;
         shouldAnswerRef.current = true;
         return;
+      }
+
+      // Decrypt offer if encrypted
+      let offerToUse;
+      try {
+        // Determine sender ID from the payload (the caller)
+        const senderId = offerPayloadToUse.from || receiverId;
+        
+        // Check if encryption was used
+        if (offerPayloadToUse.isEncrypted) {
+          // Try to enable encryption for the answer too
+          try {
+            if (isCryptoInitialized && senderId) {
+              const callerKey = await getUserPublicKey(senderId);
+              recipientPublicKeyRef.current = callerKey;
+              encryptionEnabledRef.current = true;
+              setIsEncrypted(true);
+              console.log('[ENCRYPTION] Encryption enabled for answer');
+            }
+          } catch (keyErr) {
+            console.warn('[ENCRYPTION] Could not enable encryption for answer:', keyErr);
+            encryptionEnabledRef.current = false;
+            setIsEncrypted(false);
+          }
+          
+          offerToUse = await decryptSignalingData(offerPayloadToUse, senderId);
+          
+          // Create RTCSessionDescription from decrypted data
+          if (offerToUse.type && offerToUse.sdp) {
+            offerToUse = new RTCSessionDescription(offerToUse);
+          } else {
+            throw new Error('Invalid offer format after decryption');
+          }
+          
+          console.log('[ENCRYPTION] Decrypted offer successfully');
+        } else {
+          // Unencrypted offer - handle both object and RTCSessionDescription
+          const offerObj = offerPayloadToUse.offer || offerPayloadToUse;
+          if (offerObj.type && offerObj.sdp) {
+            offerToUse = new RTCSessionDescription(offerObj);
+          } else {
+            throw new Error('Invalid unencrypted offer format');
+          }
+          setIsEncrypted(false);
+          encryptionEnabledRef.current = false;
+        }
+      } catch (decryptErr) {
+        console.error('[ENCRYPTION] Failed to decrypt offer:', decryptErr);
+        // Try to use unencrypted format
+        if (offerPayloadToUse.offer) {
+          offerToUse = new RTCSessionDescription(offerPayloadToUse.offer);
+          setIsEncrypted(false);
+          toast('Received unencrypted call. Encryption may not be available.', {
+            icon: '⚠️',
+            duration: 3000
+          });
+        } else {
+          const errorMsg = 'Failed to decrypt call offer. Please try again.';
+          toast.error(errorMsg);
+          throw new Error(errorMsg);
+        }
       }
 
       // Fix 2: Set state to getting_media
@@ -283,7 +498,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       setWebrtcState('offer_received');
 
       // Set remote description
-      await pc.setRemoteDescription(new RTCSessionDescription(offerToUse));
+      await pc.setRemoteDescription(offerToUse);
       console.log('[WEBRTC-RECEIVER] Set remote description (offer)');
 
       // Process pending ICE candidates
@@ -300,12 +515,38 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       await pc.setLocalDescription(answer);
       console.log('[WEBRTC-RECEIVER] Created and set local description (answer)');
 
-      socket.emit('voice-call:answer', {
-        answer,
-        callId,
-        from: callerId, // Use callerId (current user's ID) as 'from', not receiverId
-        to: receiverId  // Send to the caller (receiverId is the other person's ID)
-      });
+      // Encrypt answer before sending
+      try {
+        // Serialize RTCSessionDescription manually (it doesn't have toJSON)
+        const answerData = {
+          type: answer.type,
+          sdp: answer.sdp
+        };
+        const encryptedPayload = await encryptSignalingData(answerData, receiverId);
+        
+        socket.emit('voice-call:answer', {
+          ...encryptedPayload,
+          callId,
+          from: callerId,
+          to: receiverId
+        });
+        
+        console.log('[WEBRTC-RECEIVER] Encrypted answer sent to:', callerId);
+      } catch (encryptErr) {
+        console.error('[ENCRYPTION] Failed to encrypt answer, sending unencrypted:', encryptErr);
+        // Fallback to unencrypted - serialize answer
+        socket.emit('voice-call:answer', {
+          answer: {
+            type: answer.type,
+            sdp: answer.sdp
+          },
+          callId,
+          from: callerId,
+          to: receiverId,
+          encrypted: false
+        });
+        toast.error('Failed to encrypt answer. Call proceeding without encryption.');
+      }
 
       // Fix 2: Set state to answer_sent
       setWebrtcState('answer_sent');
@@ -319,10 +560,10 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       setWebrtcState('failed');
       setError(err.message);
     }
-  }, [getLocalStream, initializePeerConnection, socket, callId, callerId, receiverId, webrtcState]);
+  }, [getLocalStream, initializePeerConnection, socket, callId, callerId, receiverId, webrtcState, decryptSignalingData, encryptSignalingData, isCryptoInitialized, getUserPublicKey]);
 
   // Handle received answer
-  const handleAnswer = useCallback(async (answer) => {
+  const handleAnswer = useCallback(async (encryptedAnswerPayload) => {
     try {
       console.log('[WEBRTC-CALLER] Received answer');
 
@@ -332,9 +573,46 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
         answerTimeoutRef.current = null;
       }
 
+      // Decrypt answer if encrypted
+      let answer;
+      try {
+        // Determine sender ID from the payload (the receiver who sent the answer)
+        const senderId = encryptedAnswerPayload.from || receiverId;
+        const decryptedAnswer = await decryptSignalingData(encryptedAnswerPayload, senderId);
+        
+        // Create RTCSessionDescription from decrypted data
+        if (decryptedAnswer.type && decryptedAnswer.sdp) {
+          answer = new RTCSessionDescription(decryptedAnswer);
+        } else {
+          throw new Error('Invalid answer format after decryption');
+        }
+        
+        // Check if encryption was used
+        if (encryptedAnswerPayload.isEncrypted) {
+          setIsEncrypted(true);
+          console.log('[ENCRYPTION] Decrypted answer successfully');
+        }
+      } catch (decryptErr) {
+        console.error('[ENCRYPTION] Failed to decrypt answer:', decryptErr);
+        // Try to use unencrypted format
+        const answerObj = encryptedAnswerPayload.answer || encryptedAnswerPayload;
+        if (answerObj && answerObj.type && answerObj.sdp) {
+          answer = new RTCSessionDescription(answerObj);
+          setIsEncrypted(false);
+          toast('Received unencrypted answer. Encryption may not be available.', {
+            icon: '⚠️',
+            duration: 3000
+          });
+        } else {
+          const errorMsg = 'Failed to decrypt call answer. Please try again.';
+          toast.error(errorMsg);
+          throw new Error(errorMsg);
+        }
+      }
+
       const pc = peerConnectionRef.current;
       if (pc) {
-        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        await pc.setRemoteDescription(answer);
         setWebrtcState('answer_received');
         setRetryCount(0); // Fix 7: Reset retry count on success
 
@@ -377,22 +655,73 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
         setError(err.message);
       }
     }
-  }, [retryCount, webrtcState]);
+  }, [retryCount, webrtcState, receiverId, decryptSignalingData]);
 
   // Handle received ICE candidate
-  const handleIceCandidate = useCallback(async (candidate) => {
+  const handleIceCandidate = useCallback(async (encryptedCandidatePayload) => {
     try {
-      const pc = peerConnectionRef.current;
-      if (pc && pc.remoteDescription) {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
-      } else {
-        // Queue candidate if remote description is not set yet
-        pendingCandidatesRef.current.push(candidate);
+      // Decrypt candidate if encrypted
+      let candidateData;
+      try {
+        if (encryptedCandidatePayload.isEncrypted && encryptedCandidatePayload.encryptedData) {
+          // Determine sender ID from the payload
+          const senderId = encryptedCandidatePayload.from || receiverId;
+          // decryptSignalingData already returns parsed object
+          candidateData = await decryptSignalingData(encryptedCandidatePayload, senderId);
+        } else {
+          // Unencrypted format
+          candidateData = encryptedCandidatePayload.candidate || encryptedCandidatePayload;
+        }
+
+        // Validate candidate data before creating RTCIceCandidate
+        if (!candidateData || (!candidateData.candidate && candidateData.sdpMid === null && candidateData.sdpMLineIndex === null)) {
+          // Skip null/empty candidates (end-of-candidates marker)
+          return;
+        }
+
+        // Create RTCIceCandidate - handle cases where sdpMid/sdpMLineIndex might be null
+        try {
+          const candidate = new RTCIceCandidate(candidateData);
+          const pc = peerConnectionRef.current;
+          if (pc && pc.remoteDescription) {
+            await pc.addIceCandidate(candidate);
+          } else {
+            // Queue candidate if remote description is not set yet
+            pendingCandidatesRef.current.push(candidate);
+          }
+        } catch (candidateErr) {
+          // Skip invalid candidates (e.g., end-of-candidates markers)
+          if (candidateErr.message && candidateErr.message.includes('sdpMid and sdpMLineIndex are both null')) {
+            // This is the end-of-candidates marker - ignore it
+            return;
+          }
+          console.warn('[WEBRTC] Skipping invalid ICE candidate:', candidateErr.message);
+        }
+      } catch (decryptErr) {
+        console.error('[ENCRYPTION] Failed to decrypt ICE candidate:', decryptErr);
+        // Try unencrypted format as fallback
+        const fallbackData = encryptedCandidatePayload.candidate || encryptedCandidatePayload;
+        if (fallbackData && fallbackData.candidate) {
+          try {
+            const candidate = new RTCIceCandidate(fallbackData);
+            const pc = peerConnectionRef.current;
+            if (pc && pc.remoteDescription) {
+              await pc.addIceCandidate(candidate);
+            } else {
+              pendingCandidatesRef.current.push(candidate);
+            }
+          } catch (candidateErr) {
+            // Skip invalid candidates
+            if (!candidateErr.message || !candidateErr.message.includes('sdpMid and sdpMLineIndex are both null')) {
+              console.warn('[WEBRTC] Skipping invalid ICE candidate');
+            }
+          }
+        }
       }
     } catch (err) {
       console.error('Error handling ICE candidate:', err);
     }
-  }, []);
+  }, [receiverId, decryptSignalingData]);
 
   // Toggle mute
   const toggleMute = useCallback(() => {
@@ -458,19 +787,19 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
 
       if (data.callId === callId) {
         console.log('[WEBRTC-RECEIVER] CallId matches, storing offer');
-        // Store the offer
-        pendingOfferRef.current = data.offer;
+        // Store the encrypted offer payload (will be decrypted in answerCall)
+        pendingOfferRef.current = data;
         
         // Automatically answer if we're the receiver (not initiator) and have an active call
         // This handles the case where user accepts call before offer arrives
         if (!isInitiator && callId) {
           console.log('[WEBRTC-RECEIVER] Receiver mode with active call, answering automatically');
-          answerCall(data.offer);
+          answerCall(data);
           shouldAnswerRef.current = false;
         } else if (shouldAnswerRef.current) {
           // Fallback: if shouldAnswerRef was set, answer immediately
           console.log('[WEBRTC-RECEIVER] User already accepted, answering now');
-          answerCall(data.offer);
+          answerCall(data);
           shouldAnswerRef.current = false;
         }
       } else {
@@ -484,7 +813,8 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
 
       if (data.callId === callId) {
         console.log('[WEBRTC-CALLER] CallId matches, processing answer');
-        handleAnswer(data.answer);
+        // Pass the entire payload (encrypted or unencrypted) to handleAnswer
+        handleAnswer(data);
       } else {
         console.log('[WEBRTC-CALLER] CallId mismatch, ignoring answer');
       }
@@ -492,7 +822,8 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
 
     const handleIceCandidateEvent = (data) => {
       if (data.callId === callId) {
-        handleIceCandidate(data.candidate);
+        // Pass the entire payload (encrypted or unencrypted) to handleIceCandidate
+        handleIceCandidate(data);
       }
     };
 
@@ -569,6 +900,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
     error,
     webrtcState,       // Fix 2: Expose state for UI
     connectionStats,   // Fix 8: Expose connection quality stats
+    isEncrypted,       // Expose encryption status
   };
 };
 

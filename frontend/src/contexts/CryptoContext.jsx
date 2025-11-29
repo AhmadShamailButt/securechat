@@ -188,7 +188,11 @@ export const CryptoProvider = ({ children }) => {
       const decrypted = await cryptoService.decryptFromUser(encryptedData, senderKey, senderId);
       return decrypted;
     } catch (err) {
-      console.error('❌ Decryption failed:', err);
+      // Suppress repeated decryption errors for better UX
+      // Only log if it's not a key mismatch (which is expected for old messages)
+      if (!err.message || !err.message.includes('key mismatch')) {
+        console.error('❌ Decryption failed:', err);
+      }
       throw err;
     }
   }, [isInitialized, getUserPublicKey, initializeCrypto]);
@@ -234,7 +238,8 @@ export const CryptoProvider = ({ children }) => {
       clearCrypto,        // Clears in-memory only, preserves localStorage
       deleteKeys,         // Permanently deletes keys (dangerous!)
       initializeCrypto,
-      clearPublicKeyCache
+      clearPublicKeyCache,
+      getUserPublicKey    // Expose getUserPublicKey for voice calls
     }}>
       {children}
     </CryptoContext.Provider>
