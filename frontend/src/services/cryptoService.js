@@ -191,34 +191,62 @@ class CryptoService {
     try {
       const { ciphertext, iv, authTag } = encryptedData;
 
-      // Convert from base64 to ArrayBuffer
-      const ciphertextBuffer = this.base64ToArrayBuffer(ciphertext);
-      const ivBuffer = this.base64ToArrayBuffer(iv);
-      const authTagBuffer = this.base64ToArrayBuffer(authTag);
+      // Validate required fields
+      if (!ciphertext || !iv || !authTag) {
+        throw new Error('Missing required encryption fields (ciphertext, iv, or authTag)');
+      }
 
-      // Concatenate ciphertext and auth tag (required by Web Crypto API)
-      const combinedBuffer = new Uint8Array(
-        ciphertextBuffer.byteLength + authTagBuffer.byteLength
-      );
-      combinedBuffer.set(new Uint8Array(ciphertextBuffer), 0);
-      combinedBuffer.set(new Uint8Array(authTagBuffer), ciphertextBuffer.byteLength);
+      // Validate base64 format
+      try {
+        const ciphertextBuffer = this.base64ToArrayBuffer(ciphertext);
+        const ivBuffer = this.base64ToArrayBuffer(iv);
+        const authTagBuffer = this.base64ToArrayBuffer(authTag);
 
-      // Decrypt using AES-GCM
-      const plaintextBuffer = await window.crypto.subtle.decrypt(
-        {
-          name: 'AES-GCM',
-          iv: ivBuffer,
-          tagLength: 128,
-        },
-        sharedKey,
-        combinedBuffer
-      );
+        // Validate IV length (should be 12 bytes for GCM)
+        if (ivBuffer.byteLength !== 12) {
+          throw new Error(`Invalid IV length: expected 12 bytes, got ${ivBuffer.byteLength}`);
+        }
 
-      // Convert back to string
-      const decoder = new TextDecoder();
-      return decoder.decode(plaintextBuffer);
+        // Validate auth tag length (should be 16 bytes for 128-bit tag)
+        if (authTagBuffer.byteLength !== 16) {
+          throw new Error(`Invalid auth tag length: expected 16 bytes, got ${authTagBuffer.byteLength}`);
+        }
+
+        // Concatenate ciphertext and auth tag (required by Web Crypto API)
+        const combinedBuffer = new Uint8Array(
+          ciphertextBuffer.byteLength + authTagBuffer.byteLength
+        );
+        combinedBuffer.set(new Uint8Array(ciphertextBuffer), 0);
+        combinedBuffer.set(new Uint8Array(authTagBuffer), ciphertextBuffer.byteLength);
+
+        // Decrypt using AES-GCM
+        const plaintextBuffer = await window.crypto.subtle.decrypt(
+          {
+            name: 'AES-GCM',
+            iv: ivBuffer,
+            tagLength: 128,
+          },
+          sharedKey,
+          combinedBuffer
+        );
+
+        // Convert back to string
+        const decoder = new TextDecoder();
+        return decoder.decode(plaintextBuffer);
+      } catch (base64Error) {
+        if (base64Error.message.includes('Invalid') || base64Error.message.includes('Missing')) {
+          throw base64Error;
+        }
+        throw new Error('Invalid base64 encoding in encrypted data');
+      }
     } catch (error) {
-      console.error(' Decryption failed:', error);
+      // Provide more specific error messages
+      if (error.name === 'OperationError' || error.message.includes('decrypt')) {
+        // This is likely a key mismatch or corrupted data
+        console.error(' Decryption failed (likely key mismatch or corrupted data):', error.name);
+      } else {
+        console.error(' Decryption failed:', error.message || error);
+      }
       throw new Error('Failed to decrypt message. Message may be corrupted or key mismatch.');
     }
   }
@@ -242,15 +270,21 @@ class CryptoService {
       return await this.decryptMessage(encryptedData, sharedKey);
     } catch (error) {
       // If decryption fails, clear cache and retry ONCE
-      console.warn(`⚠️ Initial decryption failed for user ${userId}. Clearing cache and retrying.`);
-      this.sharedKeys.delete(userId);
-      
-      try {
-        const retryKey = await this.deriveSharedKey(otherUserPublicKey, userId);
-        return await this.decryptMessage(encryptedData, retryKey);
-      } catch (retryError) {
-        console.error(`❌ Retry decryption failed for user ${userId}:`, retryError);
-        throw retryError;
+      // Only retry if it's not a clear format error
+      if (error.message && !error.message.includes('Invalid') && !error.message.includes('Missing')) {
+        console.warn(`⚠️ Initial decryption failed for user ${userId}. Clearing cache and retrying.`);
+        this.sharedKeys.delete(userId);
+        
+        try {
+          const retryKey = await this.deriveSharedKey(otherUserPublicKey, userId);
+          return await this.decryptMessage(encryptedData, retryKey);
+        } catch (retryError) {
+          // Suppress retry error - it's likely an old message with different keys
+          throw retryError;
+        }
+      } else {
+        // Format error - don't retry
+        throw error;
       }
     }
   }

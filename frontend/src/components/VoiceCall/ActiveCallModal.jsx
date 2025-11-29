@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { Phone, Mic, MicOff, Volume2, VolumeX, PhoneOff } from 'lucide-react';
+import { Phone, Mic, MicOff, Volume2, VolumeX, PhoneOff, Lock, LockOpen } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { Button } from '../ui/Button';
 import { cn } from '../../lib/utils';
@@ -12,6 +12,7 @@ export default function ActiveCallModal({
   duration,
   isMuted,
   isSpeakerOn,
+  isEncrypted,
   onToggleMute,
   onToggleSpeaker,
   onEndCall
@@ -72,6 +73,22 @@ export default function ActiveCallModal({
           <div className="text-center">
             <p className="text-xl font-semibold text-foreground">{contactName}</p>
             <p className="text-sm text-muted-foreground mt-1">{statusText}</p>
+            {/* Encryption status */}
+            {callStatus === 'connected' && (
+              <div className="flex items-center justify-center gap-1 mt-2">
+                {isEncrypted ? (
+                  <>
+                    <Lock className="h-3 w-3 text-green-500" />
+                    <span className="text-xs text-green-500">End-to-end encrypted</span>
+                  </>
+                ) : (
+                  <>
+                    <LockOpen className="h-3 w-3 text-yellow-500" />
+                    <span className="text-xs text-yellow-500">Unencrypted</span>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Call controls */}
