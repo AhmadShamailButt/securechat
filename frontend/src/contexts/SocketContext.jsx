@@ -2,7 +2,7 @@ import { io } from 'socket.io-client';
 import { createContext, useContext, useEffect, useState, useRef } from 'react';
 
 // Use environment variable with fallback
-const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
+const API_URL = import.meta.env.VITE_API_URL || 'https://apisecurechat.duckdns.org';
 
 // Create a context for socket state
 const SocketContext = createContext({
