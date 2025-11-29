@@ -71,13 +71,31 @@ export const markGroupMessageAsRead = async (groupId, messageId) => {
 // ==================== Group Key Management ====================
 
 export const storeGroupKey = async (groupId, keyData) => {
+  console.log(`[STORE KEY] Storing key for group ${groupId}, user ${keyData.userId}`);
+  console.log(`[STORE KEY] Payload:`, {
+    userId: keyData.userId,
+    hasEncryptedKey: !!keyData.encryptedGroupKey,
+    hasIv: !!keyData.iv,
+    hasAuthTag: !!keyData.authTag
+  });
+
   const response = await api.post(`/api/groups/${groupId}/keys`, keyData);
+
+  console.log(`[STORE KEY] ✅ Successfully stored key for user ${keyData.userId}`);
   return response.data;
 };
 
 export const getGroupKey = async (groupId, userId) => {
-  const response = await api.get(`/api/groups/${groupId}/keys/${userId}`);
-  return response.data;
+  console.log(`[GET KEY] Fetching key for group ${groupId}, user ${userId}`);
+
+  try {
+    const response = await api.get(`/api/groups/${groupId}/keys/${userId}`);
+    console.log(`[GET KEY] ✅ Successfully retrieved key for user ${userId}`);
+    return response.data;
+  } catch (error) {
+    console.error(`[GET KEY] ❌ Failed to retrieve key for user ${userId}:`, error.response?.status, error.response?.data);
+    throw error;
+  }
 };
 
 export default {

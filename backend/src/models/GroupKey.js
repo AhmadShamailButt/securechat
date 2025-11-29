@@ -13,6 +13,13 @@ const groupKeySchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  // The user who encrypted this key (usually the group creator)
+  // This helps with debugging and understanding the encryption flow
+  encryptedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: false // Made optional for backward compatibility
+  },
   // The group's AES key encrypted with this user's ECDH public key
   encryptedGroupKey: {
     type: String,

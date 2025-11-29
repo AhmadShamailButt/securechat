@@ -173,7 +173,7 @@ exports.storeGroupKey = async (req, res) => {
     if (!currentUserId) return res.status(401).json({ error: "Not authenticated" });
 
     const { groupId } = req.params;
-    const { userId, encryptedGroupKey, iv, authTag } = req.body;
+    const { userId, encryptedGroupKey, iv, authTag, encryptedBy } = req.body;
 
     if (!groupId || !mongoose.Types.ObjectId.isValid(groupId)) {
       return res.status(400).json({ error: "Invalid group ID" });
@@ -207,14 +207,23 @@ exports.storeGroupKey = async (req, res) => {
     }
 
     // Store or update the encrypted group key
+    const updateData = {
+      encryptedGroupKey,
+      iv,
+      authTag,
+      updatedAt: new Date()
+    };
+
+    // Add encryptedBy if provided (defaults to currentUserId for tracking)
+    if (encryptedBy && mongoose.Types.ObjectId.isValid(encryptedBy)) {
+      updateData.encryptedBy = encryptedBy;
+    } else {
+      updateData.encryptedBy = currentUserId;
+    }
+
     const groupKey = await GroupKey.findOneAndUpdate(
       { groupId, userId },
-      {
-        encryptedGroupKey,
-        iv,
-        authTag,
-        updatedAt: new Date()
-      },
+      updateData,
       { upsert: true, new: true }
     );
 
@@ -277,7 +286,8 @@ exports.getGroupKey = async (req, res) => {
       userId: groupKey.userId.toString(),
       encryptedGroupKey: groupKey.encryptedGroupKey,
       iv: groupKey.iv,
-      authTag: groupKey.authTag
+      authTag: groupKey.authTag,
+      encryptedBy: groupKey.encryptedBy ? groupKey.encryptedBy.toString() : null
     });
   } catch (error) {
     console.error("Error fetching group key:", error);

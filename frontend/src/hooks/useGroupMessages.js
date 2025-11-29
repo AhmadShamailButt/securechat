@@ -28,10 +28,16 @@ export default function useGroupMessages(socket, activeGroup, user, isCryptoInit
       return;
     }
 
+    const userId = user?.id || user?._id;
+    if (!userId) {
+      console.error('[GROUP] Cannot join group: user ID not available');
+      return;
+    }
+
     console.log(`[GROUP] Joining group room: ${activeGroup.id}`);
     socket.emit('joinGroup', {
       groupId: activeGroup.id,
-      userId: user.id
+      userId: userId
     });
 
     setIsJoinedGroup(true);
@@ -46,7 +52,8 @@ export default function useGroupMessages(socket, activeGroup, user, isCryptoInit
         setIsJoinedGroup(false);
       }
     };
-  }, [socket, activeGroup, user, dispatch]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket, activeGroup?.id]); // user and dispatch are stable, excluded to prevent re-render loop
 
   // Decrypt group messages
   useEffect(() => {
@@ -56,13 +63,15 @@ export default function useGroupMessages(socket, activeGroup, user, isCryptoInit
       }
 
       const newDecrypted = {};
+      let hasNewMessages = false;
 
       for (const msg of currentGroupMessages) {
         // Skip if already decrypted or not encrypted
         if (decryptedGroupMessages[msg.id] || !msg.isEncrypted) {
-          newDecrypted[msg.id] = decryptedGroupMessages[msg.id] || msg.text;
           continue;
         }
+
+        hasNewMessages = true;
 
         try {
           console.log(`🔓 Decrypting group message ${msg.id}`);
@@ -75,22 +84,42 @@ export default function useGroupMessages(socket, activeGroup, user, isCryptoInit
             },
             activeGroup.id,
             user.id || user._id,
-            activeGroup.createdBy.id
+            activeGroup.createdBy.id,
+            activeGroup.members // Pass members for potential encryption repair
           );
 
           newDecrypted[msg.id] = decrypted;
           console.log(`✅ Decrypted group message ${msg.id}`);
         } catch (error) {
-          console.error(`❌ Failed to decrypt group message ${msg.id}:`, error);
-          newDecrypted[msg.id] = '[Decryption failed]';
+          // Check if this is a "creator only" error for non-creators
+          const isCreatorOnlyError = error.message?.includes('Only group creator can initialize encryption');
+          const isCurrentUserCreator = (user.id || user._id) === activeGroup.createdBy.id;
+
+          if (isCreatorOnlyError && !isCurrentUserCreator) {
+            // Non-creator trying to decrypt - show helpful message
+            newDecrypted[msg.id] = '[Waiting for group creator to set up encryption]';
+            // Only log once to avoid console spam
+            if (!sessionStorage.getItem(`group-${activeGroup.id}-creator-notice-shown`)) {
+              console.warn(`⚠️ Group encryption not initialized. Ask the group creator to send a message first.`);
+              sessionStorage.setItem(`group-${activeGroup.id}-creator-notice-shown`, 'true');
+            }
+          } else {
+            // Other decryption errors
+            console.error(`❌ Failed to decrypt group message ${msg.id}:`, error);
+            newDecrypted[msg.id] = '[Decryption failed]';
+          }
         }
       }
 
-      setDecryptedGroupMessages(prev => ({ ...prev, ...newDecrypted }));
+      // Only update state if we have new decrypted messages
+      if (hasNewMessages && Object.keys(newDecrypted).length > 0) {
+        setDecryptedGroupMessages(prev => ({ ...prev, ...newDecrypted }));
+      }
     };
 
     decryptMessagesAsync();
-  }, [currentGroupMessages, isCryptoInitialized, activeGroup, user, decryptedGroupMessages]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentGroupMessages, isCryptoInitialized, activeGroup?.id, user?.id]); // Use IDs only to prevent reference changes causing re-renders
 
   // Listen for incoming group messages
   useEffect(() => {
@@ -121,11 +150,22 @@ export default function useGroupMessages(socket, activeGroup, user, isCryptoInit
             [message.id]: plaintext
           }));
         } catch (error) {
-          console.error('Failed to decrypt incoming group message:', error);
-          setDecryptedGroupMessages(prev => ({
-            ...prev,
-            [message.id]: '[Decryption failed]'
-          }));
+          // Check if this is a "creator only" error for non-creators
+          const isCreatorOnlyError = error.message?.includes('Only group creator can initialize encryption');
+          const isCurrentUserCreator = (user.id || user._id) === activeGroup.createdBy.id;
+
+          if (isCreatorOnlyError && !isCurrentUserCreator) {
+            setDecryptedGroupMessages(prev => ({
+              ...prev,
+              [message.id]: '[Waiting for group creator to set up encryption]'
+            }));
+          } else {
+            console.error('Failed to decrypt incoming group message:', error);
+            setDecryptedGroupMessages(prev => ({
+              ...prev,
+              [message.id]: '[Decryption failed]'
+            }));
+          }
         }
       }
     };
@@ -135,7 +175,8 @@ export default function useGroupMessages(socket, activeGroup, user, isCryptoInit
     return () => {
       socket.off('newGroupMessage', handleNewGroupMessage);
     };
-  }, [socket, activeGroup, user, dispatch]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket, activeGroup?.id]); // user and dispatch are stable, excluded to prevent re-render loop
 
   // Send group message
   const sendMessage = useCallback(async (text) => {
@@ -145,12 +186,13 @@ export default function useGroupMessages(socket, activeGroup, user, isCryptoInit
     }
 
     try {
-      // Encrypt the message
+      // Encrypt the message (pass members for auto-repair if needed)
       const encrypted = await encryptMessageForGroup(
         text,
         activeGroup.id,
         user.id || user._id,
-        activeGroup.createdBy.id
+        activeGroup.createdBy.id,
+        activeGroup.members // Pass members for potential encryption repair
       );
 
       const messageData = {
@@ -184,7 +226,18 @@ export default function useGroupMessages(socket, activeGroup, user, isCryptoInit
       return sentMessage;
     } catch (error) {
       console.error('[GROUP] Failed to send message:', error);
-      toast.error('Failed to send message');
+
+      // Check if this is a creator-only error
+      const isCreatorOnlyError = error.message?.includes('Only group creator can initialize encryption');
+
+      if (isCreatorOnlyError) {
+        toast.error('Please ask the group creator to send a message first to set up encryption', {
+          duration: 5000
+        });
+      } else {
+        toast.error('Failed to send message');
+      }
+
       throw error;
     }
   }, [activeGroup, user, dispatch, socket, isJoinedGroup]);
