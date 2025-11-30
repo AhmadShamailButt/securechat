@@ -148,10 +148,15 @@ export const CryptoProvider = ({ children }) => {
     }
   }, []);
   
-  // Clear public key cache
-  const clearPublicKeyCache = useCallback(() => {
-    publicKeyCache.current = {};
-    console.log('🗑️ Public key cache cleared');
+  // Clear public key cache (all or for specific user)
+  const clearPublicKeyCache = useCallback((userId = null) => {
+    if (userId) {
+      delete publicKeyCache.current[userId];
+      console.log(`🗑️ Public key cache cleared for user: ${userId}`);
+    } else {
+      publicKeyCache.current = {};
+      console.log('🗑️ Public key cache cleared (all users)');
+    }
   }, []);
 
   // Clear shared key cache for a specific user
@@ -202,6 +207,23 @@ export const CryptoProvider = ({ children }) => {
       const decrypted = await cryptoService.decryptFromUser(encryptedData, senderKey, senderId);
       return decrypted;
     } catch (err) {
+      // If OperationError (key mismatch), clear public key cache to force re-fetch
+      // This ensures we get the latest public key if it was updated
+      const isOperationError = err.name === 'OperationError' || 
+                               (err.message && (
+                                 err.message.includes('Wrong key') ||
+                                 err.message.includes('authentication failure') ||
+                                 err.message.includes('different key')
+                               ));
+      
+      if (isOperationError && senderId) {
+        console.warn(`⚠️ OperationError detected - clearing caches for user: ${senderId}`);
+        // Clear public key cache for this user to force fresh fetch on next attempt
+        clearPublicKeyCache(senderId);
+        // Also clear shared key cache (already done in cryptoService, but ensure it's cleared)
+        cryptoService.clearSharedKeyCache(senderId);
+      }
+      
       // Suppress repeated decryption errors for better UX
       // Only log if it's not a key mismatch (which is expected for old messages)
       if (!err.message || !err.message.includes('key mismatch')) {
@@ -209,7 +231,7 @@ export const CryptoProvider = ({ children }) => {
       }
       throw err;
     }
-  }, [isInitialized, getUserPublicKey, initializeCrypto]);
+  }, [isInitialized, getUserPublicKey, initializeCrypto, clearPublicKeyCache]);
 
   // MODIFIED: Only clear in-memory keys, NOT localStorage
   const clearCrypto = useCallback(() => {
