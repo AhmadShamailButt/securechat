@@ -86,6 +86,29 @@ class CryptoService {
   }
 
   /**
+   * Clear shared key cache for a specific user
+   * Useful when keys need to be refreshed (e.g., after reconnection)
+   */
+  clearSharedKeyCache(userId) {
+    if (this.sharedKeys.has(userId)) {
+      console.log(`🗑️ Clearing shared key cache for user: ${userId}`);
+      this.sharedKeys.delete(userId);
+    }
+  }
+
+  /**
+   * Clear all shared key cache
+   * Useful when all keys need to be refreshed (e.g., after reconnection)
+   */
+  clearAllSharedKeyCache() {
+    const count = this.sharedKeys.size;
+    if (count > 0) {
+      console.log(`🗑️ Clearing all shared key cache (${count} keys)`);
+      this.sharedKeys.clear();
+    }
+  }
+
+  /**
    * Derive shared secret key from other user's public key
    */
   async deriveSharedKey(otherUserPublicKeyBase64, userId) {
@@ -454,29 +477,42 @@ class CryptoService {
       
       // If decryption fails, clear cache and retry ONCE
       // This handles cases where the key might have changed or cache is stale
-      console.warn(`⚠️ Initial decryption failed for user ${userId}. Clearing cache and retrying.`);
-      this.sharedKeys.delete(userId);
+      // Check if error is OperationError (key mismatch) vs other errors
+      const isKeyMismatch = error.name === 'OperationError' || 
+                           error.message?.includes('Wrong key') ||
+                           error.message?.includes('authentication failure');
       
-      try {
-        const retryKey = await this.deriveSharedKey(otherUserPublicKey, userId);
-        return await this.decryptMessage(encryptedData, retryKey);
-      } catch (retryError) {
-        // Check if retry also failed due to format error
-        const retryIsFormatError = retryError.message && (
-          retryError.message.includes('Invalid') || 
-          retryError.message.includes('Missing') ||
-          retryError.message.includes('too short') ||
-          retryError.message.includes('corrupted') ||
-          retryError.message.includes('format')
-        );
+      if (isKeyMismatch) {
+        console.warn(`⚠️ Decryption failed (likely key mismatch) for user ${userId}. Clearing cache and retrying with fresh key.`);
+        this.sharedKeys.delete(userId);
         
-        if (retryIsFormatError) {
-          // Format error on retry - data is definitely invalid
+        try {
+          // Re-derive key with fresh derivation
+          const retryKey = await this.deriveSharedKey(otherUserPublicKey, userId);
+          console.log(`🔄 Retrying decryption with fresh key for user: ${userId}`);
+          return await this.decryptMessage(encryptedData, retryKey);
+        } catch (retryError) {
+          // Check if retry also failed due to format error
+          const retryIsFormatError = retryError.message && (
+            retryError.message.includes('Invalid') || 
+            retryError.message.includes('Missing') ||
+            retryError.message.includes('too short') ||
+            retryError.message.includes('corrupted') ||
+            retryError.message.includes('format')
+          );
+          
+          if (retryIsFormatError) {
+            // Format error on retry - data is definitely invalid
+            throw retryError;
+          }
+          
+          // Decryption error on retry - likely an old message with different keys
           throw retryError;
         }
-        
-        // Decryption error on retry - likely an old message with different keys
-        throw retryError;
+      } else {
+        // Not a key mismatch error - likely data corruption or other issue
+        console.error(`❌ Decryption failed (non-key error) for user ${userId}:`, error);
+        throw error;
       }
     }
   }

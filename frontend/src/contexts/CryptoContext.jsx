@@ -154,6 +154,20 @@ export const CryptoProvider = ({ children }) => {
     console.log('🗑️ Public key cache cleared');
   }, []);
 
+  // Clear shared key cache for a specific user
+  const clearSharedKeyCache = useCallback((userId) => {
+    if (userId) {
+      cryptoService.clearSharedKeyCache(userId);
+      console.log(`🗑️ Shared key cache cleared for user: ${userId}`);
+    }
+  }, []);
+
+  // Clear all shared key cache
+  const clearAllSharedKeyCache = useCallback(() => {
+    cryptoService.clearAllSharedKeyCache();
+    console.log('🗑️ All shared key cache cleared');
+  }, []);
+
   const encryptMessage = useCallback(async (plaintext, recipientId) => {
     if (!isInitialized) {
         console.log('⏸️ Crypto not initialized, initializing now...');
@@ -239,6 +253,8 @@ export const CryptoProvider = ({ children }) => {
       deleteKeys,         // Permanently deletes keys (dangerous!)
       initializeCrypto,
       clearPublicKeyCache,
+      clearSharedKeyCache,    // Clear shared key cache for specific user
+      clearAllSharedKeyCache, // Clear all shared key cache
       getUserPublicKey    // Expose getUserPublicKey for voice calls
     }}>
       {children}

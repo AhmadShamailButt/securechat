@@ -44,7 +44,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
   const [isEncrypted, setIsEncrypted] = useState(false);
   
   // Crypto context for encryption
-  const { encryptMessage, decryptMessage, isInitialized: isCryptoInitialized, getUserPublicKey } = useCrypto();
+  const { encryptMessage, decryptMessage, isInitialized: isCryptoInitialized, getUserPublicKey, clearSharedKeyCache } = useCrypto();
 
   // WebRTC state machine
   const [webrtcState, setWebrtcState] = useState('idle');
@@ -1487,7 +1487,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
     const handleReconnect = () => {
       console.log('[WEBRTC] Socket reconnected during voice call');
       
-      // If there's an active call during reconnection, log warning
+      // If there's an active call during reconnection, clear key cache and refresh keys
       if (callId && (webrtcState !== 'idle' && webrtcState !== 'ended')) {
         console.warn('[WEBRTC] Active call detected during reconnection:', {
           callId,
@@ -1497,8 +1497,15 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
           callerId
         });
         
+        // Clear shared key cache for the other participant to force key refresh
+        const otherUserId = isInitiator ? receiverId : callerId;
+        if (otherUserId) {
+          console.log(`[WEBRTC] Clearing shared key cache for user: ${otherUserId}`);
+          clearSharedKeyCache(otherUserId);
+        }
+        
         // Note: Room rejoining is handled by ChatPage's reconnection handler
-        // This is just for logging and potential future retry logic
+        // Keys will be re-derived on next encrypt/decrypt operation
       }
     };
 
@@ -1515,7 +1522,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       socket.off('connect', handleReconnect);
       socket.off('reconnect', handleReconnect);
     };
-  }, [socket, callId, answerCall, handleAnswer, handleIceCandidate, isInitiator, webrtcState, receiverId, callerId]);
+  }, [socket, callId, answerCall, handleAnswer, handleIceCandidate, isInitiator, webrtcState, receiverId, callerId, clearSharedKeyCache]);
 
   // Cleanup on unmount only (not on re-render)
   useEffect(() => {
