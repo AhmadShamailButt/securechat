@@ -1144,6 +1144,32 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
               console.log('[AUDIO] Using AEC3 (Chrome/Edge advanced echo cancellation)');
             }
           }
+
+          // Sample rate verification - check for mismatches
+          if (audioContextRef.current && settings.sampleRate) {
+            const inputSampleRate = settings.sampleRate;
+            const outputSampleRate = audioContextRef.current.sampleRate;
+            
+            if (inputSampleRate !== outputSampleRate) {
+              console.warn('[AUDIO] Sample rate mismatch detected:', {
+                input: inputSampleRate,
+                output: outputSampleRate,
+                message: 'Mismatched sample rates can cause echo issues'
+              });
+              toast('Audio sample rate mismatch detected. This may cause echo. Consider using headphones.', {
+                icon: '⚠️',
+                duration: 5000
+              });
+            } else if (inputSampleRate !== 48000) {
+              console.warn('[AUDIO] Non-standard sample rate:', {
+                sampleRate: inputSampleRate,
+                expected: 48000,
+                message: 'WebRTC standard is 48kHz'
+              });
+            } else {
+              console.log('[AUDIO] ✓ Sample rates match (48kHz)');
+            }
+          }
         }
         
         // Apply constraints at track level to ensure they're active
@@ -1166,32 +1192,6 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
           }
         } catch (applyErr) {
           console.warn('[AUDIO] Could not apply constraints at track level:', applyErr);
-        }
-
-        // Sample rate verification - check for mismatches
-        if (audioContextRef.current && settings.sampleRate) {
-          const inputSampleRate = settings.sampleRate;
-          const outputSampleRate = audioContextRef.current.sampleRate;
-          
-          if (inputSampleRate !== outputSampleRate) {
-            console.warn('[AUDIO] Sample rate mismatch detected:', {
-              input: inputSampleRate,
-              output: outputSampleRate,
-              message: 'Mismatched sample rates can cause echo issues'
-            });
-            toast('Audio sample rate mismatch detected. This may cause echo. Consider using headphones.', {
-              icon: '⚠️',
-              duration: 5000
-            });
-          } else if (inputSampleRate !== 48000) {
-            console.warn('[AUDIO] Non-standard sample rate:', {
-              sampleRate: inputSampleRate,
-              expected: 48000,
-              message: 'WebRTC standard is 48kHz'
-            });
-          } else {
-            console.log('[AUDIO] ✓ Sample rates match (48kHz)');
-          }
         }
         
         // Set up periodic echo cancellation verification (every 10 seconds)
