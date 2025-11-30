@@ -60,11 +60,18 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
   const [connectionQuality, setConnectionQuality] = useState('good'); // 'good', 'fair', 'poor'
   const audioContextRef = useRef(null);
   const audioLevelRef = useRef(0);
-  
+
   // Audio device selection and browser detection
   const [availableAudioDevices, setAvailableAudioDevices] = useState([]);
   const [selectedAudioDeviceId, setSelectedAudioDeviceId] = useState(null);
+  const [availableOutputDevices, setAvailableOutputDevices] = useState([]);
+  const [selectedOutputDeviceId, setSelectedOutputDeviceId] = useState(null);
   const browserInfoRef = useRef(null);
+  
+  // AGC/NS toggle states for echo cancellation troubleshooting
+  const [disableAGC, setDisableAGC] = useState(false);
+  const [disableNS, setDisableNS] = useState(false);
+  const workingConstraintsRef = useRef(null); // Store which constraint combination worked
 
   const peerConnectionRef = useRef(null);
   const remoteAudioRef = useRef(null);
@@ -118,7 +125,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
     detectBrowser();
   }, []);
 
-  // Enumerate available audio devices
+  // Enumerate available audio input devices
   const enumerateAudioDevices = useCallback(async () => {
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
@@ -136,13 +143,118 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
         }));
       
       setAvailableAudioDevices(audioInputs);
-      console.log('[AUDIO] Available audio devices:', audioInputs);
+      console.log('[AUDIO] Available audio input devices:', audioInputs);
       return audioInputs;
     } catch (err) {
       console.error('[AUDIO] Error enumerating audio devices:', err);
       return [];
     }
   }, []);
+
+  // Enumerate available audio output devices
+  const enumerateOutputDevices = useCallback(async () => {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+        console.warn('[AUDIO] Output device enumeration not supported');
+        return [];
+      }
+      
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioOutputs = devices
+        .filter(device => device.kind === 'audiooutput')
+        .map(device => ({
+          deviceId: device.deviceId,
+          label: device.label || `Speaker ${device.deviceId.substring(0, 8)}`,
+          groupId: device.groupId
+        }));
+      
+      setAvailableOutputDevices(audioOutputs);
+      console.log('[AUDIO] Available audio output devices:', audioOutputs);
+      return audioOutputs;
+    } catch (err) {
+      console.error('[AUDIO] Error enumerating output devices:', err);
+      return [];
+    }
+  }, []);
+
+  // Set audio output device using setSinkId
+  const setAudioOutputDevice = useCallback(async (deviceId) => {
+    if (!remoteAudioRef.current) {
+      console.warn('[AUDIO] Remote audio element not available');
+      return false;
+    }
+
+    if (!remoteAudioRef.current.setSinkId) {
+      console.warn('[AUDIO] setSinkId not supported in this browser');
+      toast('Audio output device selection not supported in this browser', {
+        icon: '⚠️',
+        duration: 3000
+      });
+      return false;
+    }
+
+    try {
+      await remoteAudioRef.current.setSinkId(deviceId);
+      setSelectedOutputDeviceId(deviceId);
+      console.log('[AUDIO] Audio output device set to:', deviceId);
+      toast.success('Audio output device changed');
+      return true;
+    } catch (err) {
+      console.error('[AUDIO] Failed to set audio output device:', err);
+      toast.error('Failed to change audio output device');
+      return false;
+    }
+  }, []);
+
+  // Toggle AGC (Auto Gain Control) - can interfere with echo cancellation
+  const toggleAGC = useCallback(async () => {
+    setDisableAGC(prev => {
+      const newValue = !prev;
+      console.log(`[AUDIO] AGC ${newValue ? 'disabled' : 'enabled'}`);
+      
+      // Reapply constraints if we have a local stream
+      if (localStream) {
+        const audioTrack = localStream.getAudioTracks()[0];
+        if (audioTrack && audioTrack.applyConstraints) {
+          audioTrack.applyConstraints({
+            autoGainControl: !newValue
+          }).then(() => {
+            toast.success(`Auto Gain Control ${newValue ? 'disabled' : 'enabled'}`);
+          }).catch(err => {
+            console.error('[AUDIO] Failed to toggle AGC:', err);
+            toast.error('Failed to toggle Auto Gain Control');
+          });
+        }
+      }
+      
+      return newValue;
+    });
+  }, [localStream]);
+
+  // Toggle NS (Noise Suppression) - can interfere with echo cancellation
+  const toggleNS = useCallback(async () => {
+    setDisableNS(prev => {
+      const newValue = !prev;
+      console.log(`[AUDIO] Noise Suppression ${newValue ? 'disabled' : 'enabled'}`);
+      
+      // Reapply constraints if we have a local stream
+      if (localStream) {
+        const audioTrack = localStream.getAudioTracks()[0];
+        if (audioTrack && audioTrack.applyConstraints) {
+          audioTrack.applyConstraints({
+            noiseSuppression: !newValue
+          }).then(() => {
+            toast.success(`Noise Suppression ${newValue ? 'disabled' : 'enabled'}`);
+          }).catch(err => {
+            console.error('[AUDIO] Failed to toggle NS:', err);
+            toast.error('Failed to toggle Noise Suppression');
+          });
+        }
+      }
+      
+      return newValue;
+    });
+  }, [localStream]);
 
   // Request permission and enumerate devices after first getUserMedia call
   useEffect(() => {
@@ -154,10 +266,12 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
         
         // Now enumerate devices (will have labels)
         await enumerateAudioDevices();
+        await enumerateOutputDevices();
       } catch (err) {
         console.warn('[AUDIO] Could not request device access for enumeration:', err);
         // Still try to enumerate (devices won't have labels)
         await enumerateAudioDevices();
+        await enumerateOutputDevices();
       }
     };
     
@@ -165,7 +279,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
     if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
       requestDeviceAccess();
     }
-  }, [enumerateAudioDevices]);
+  }, [enumerateAudioDevices, enumerateOutputDevices]);
 
   // Create audio element for remote stream with enhanced audio processing
   useEffect(() => {
@@ -183,7 +297,8 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       
       // Set volume to reasonable level to prevent feedback loops
       // Lower volume reduces chance of echo if speakers are near microphone
-      remoteAudioRef.current.volume = 0.8;
+      // Reduced to 0.65 for better echo prevention (was 0.8)
+      remoteAudioRef.current.volume = 0.65;
       
       document.body.appendChild(remoteAudioRef.current);
     }
@@ -242,10 +357,17 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
     if (remoteStream && remoteAudioRef.current) {
       remoteAudioRef.current.srcObject = remoteStream;
       
+      // Set output device if one was selected
+      if (selectedOutputDeviceId && remoteAudioRef.current.setSinkId) {
+        remoteAudioRef.current.setSinkId(selectedOutputDeviceId).catch(err => {
+          console.warn('[AUDIO] Failed to set output device on stream change:', err);
+        });
+      }
+      
       // Attempt to play audio (will work if user has already interacted)
       playRemoteAudio();
     }
-  }, [remoteStream, playRemoteAudio]);
+  }, [remoteStream, playRemoteAudio, selectedOutputDeviceId]);
 
   // Audio level monitoring for local stream (read-only, no processing)
   // Note: This monitoring does NOT affect the actual WebRTC stream
@@ -860,32 +982,95 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
         // Sample size for better quality
         sampleSize: 16
       };
-      
+
       // Add device selection if specified
       if (deviceId) {
         audioConstraints.deviceId = { exact: deviceId };
       }
 
-      // Try with full constraints first
-      let stream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: audioConstraints
-        });
-      } catch (constraintError) {
-        // Fallback: try with minimal constraints if full constraints fail
-        console.warn('[AUDIO] Full constraints failed, trying minimal constraints:', constraintError);
-        const fallbackConstraints = {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        };
-        if (deviceId) {
-          fallbackConstraints.deviceId = { exact: deviceId };
+      // Progressive constraint fallback for echo cancellation troubleshooting
+      // Try different combinations to find what works best for echo prevention
+      // Order: AEC only → AEC+NS → AEC+AGC → All three
+      const constraintCombinations = [
+        {
+          name: 'AEC only',
+          constraints: {
+            sampleRate: 48000,
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: false,
+            autoGainControl: false,
+            latency: 0.01,
+            sampleSize: 16
+          }
+        },
+        {
+          name: 'AEC + NS',
+          constraints: {
+            sampleRate: 48000,
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: false,
+            latency: 0.01,
+            sampleSize: 16
+          }
+        },
+        {
+          name: 'AEC + AGC',
+          constraints: {
+            sampleRate: 48000,
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: false,
+            autoGainControl: true,
+            latency: 0.01,
+            sampleSize: 16
+          }
+        },
+        {
+          name: 'AEC + NS + AGC (all)',
+          constraints: audioConstraints
         }
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: fallbackConstraints
-        });
+      ];
+
+      // Apply user preferences (disable AGC/NS if toggled)
+      constraintCombinations.forEach(combo => {
+        if (disableAGC) {
+          combo.constraints.autoGainControl = false;
+        }
+        if (disableNS) {
+          combo.constraints.noiseSuppression = false;
+        }
+        if (deviceId) {
+          combo.constraints.deviceId = { exact: deviceId };
+        }
+      });
+
+      // Try each combination until one works
+      let stream;
+      let workingCombo = null;
+      let lastError = null;
+
+      for (const combo of constraintCombinations) {
+        try {
+          console.log(`[AUDIO] Trying constraint combination: ${combo.name}`);
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: combo.constraints
+          });
+          workingCombo = combo.name;
+          workingConstraintsRef.current = combo.constraints;
+          console.log(`[AUDIO] ✓ Successfully got stream with: ${combo.name}`);
+          break;
+        } catch (err) {
+          console.warn(`[AUDIO] Constraint combination "${combo.name}" failed:`, err.message);
+          lastError = err;
+          continue;
+        }
+      }
+
+      if (!stream) {
+        throw lastError || new Error('All constraint combinations failed');
       }
       
       // Apply and verify audio track constraints
@@ -893,12 +1078,12 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       if (audioTrack) {
         // Verify and log actual settings applied by browser
         if (audioTrack.getSettings) {
-          const settings = audioTrack.getSettings();
+        const settings = audioTrack.getSettings();
           console.log('[AUDIO] Audio track settings applied:', {
-            sampleRate: settings.sampleRate,
-            channelCount: settings.channelCount,
-            echoCancellation: settings.echoCancellation,
-            noiseSuppression: settings.noiseSuppression,
+          sampleRate: settings.sampleRate,
+          channelCount: settings.channelCount,
+          echoCancellation: settings.echoCancellation,
+          noiseSuppression: settings.noiseSuppression,
             autoGainControl: settings.autoGainControl,
             deviceId: settings.deviceId
           });
@@ -937,11 +1122,19 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
               }
             } catch (enableErr) {
               console.error('[AUDIO] Failed to enable echo cancellation:', enableErr);
-              // Notify user
-              toast('Echo cancellation failed to enable. Using headphones is recommended.', {
-                icon: '⚠️',
-                duration: 5000
-              });
+              // Notify user with Chrome-specific guidance
+              const browserInfo = browserInfoRef.current || {};
+              if (browserInfo.isChrome || browserInfo.isEdge) {
+                toast('Echo cancellation not working? Go to Chrome Settings → WebRTC → Advanced Mic Settings → Enable Echo Cancellation', {
+                  icon: '⚠️',
+                  duration: 8000
+                });
+              } else {
+                toast('Echo cancellation failed to enable. Using headphones is recommended.', {
+                  icon: '⚠️',
+                  duration: 5000
+                });
+              }
             }
           } else {
             console.log(`[AUDIO] ✓ Echo cancellation is enabled (Browser: ${browserInfo.name || 'Unknown'})`);
@@ -954,16 +1147,16 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
         }
         
         // Apply constraints at track level to ensure they're active
-        // This is important for some browsers that don't fully respect getUserMedia constraints
+        // Use the working constraints from progressive fallback
         try {
-          if (audioTrack.applyConstraints) {
+          if (audioTrack.applyConstraints && workingConstraintsRef.current) {
             const appliedConstraints = {
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true
+              echoCancellation: workingConstraintsRef.current.echoCancellation !== false,
+              noiseSuppression: workingConstraintsRef.current.noiseSuppression !== false,
+              autoGainControl: workingConstraintsRef.current.autoGainControl !== false
             };
             await audioTrack.applyConstraints(appliedConstraints);
-            console.log('[AUDIO] Applied constraints at track level');
+            console.log('[AUDIO] Applied constraints at track level:', appliedConstraints);
             
             // Verify constraints were actually applied
             const verifySettings = audioTrack.getSettings();
@@ -973,6 +1166,32 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
           }
         } catch (applyErr) {
           console.warn('[AUDIO] Could not apply constraints at track level:', applyErr);
+        }
+
+        // Sample rate verification - check for mismatches
+        if (audioContextRef.current && settings.sampleRate) {
+          const inputSampleRate = settings.sampleRate;
+          const outputSampleRate = audioContextRef.current.sampleRate;
+          
+          if (inputSampleRate !== outputSampleRate) {
+            console.warn('[AUDIO] Sample rate mismatch detected:', {
+              input: inputSampleRate,
+              output: outputSampleRate,
+              message: 'Mismatched sample rates can cause echo issues'
+            });
+            toast('Audio sample rate mismatch detected. This may cause echo. Consider using headphones.', {
+              icon: '⚠️',
+              duration: 5000
+            });
+          } else if (inputSampleRate !== 48000) {
+            console.warn('[AUDIO] Non-standard sample rate:', {
+              sampleRate: inputSampleRate,
+              expected: 48000,
+              message: 'WebRTC standard is 48kHz'
+            });
+          } else {
+            console.log('[AUDIO] ✓ Sample rates match (48kHz)');
+          }
         }
         
         // Set up periodic echo cancellation verification (every 10 seconds)
@@ -2317,6 +2536,16 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
     selectedAudioDeviceId,  // Currently selected device ID
     changeAudioDevice,      // Function to change audio device
     enumerateAudioDevices,  // Function to refresh device list
+    // Audio output device selection (NEW - for echo cancellation)
+    availableOutputDevices,  // List of available audio output devices
+    selectedOutputDeviceId,  // Currently selected output device ID
+    setAudioOutputDevice,    // Function to set audio output device (setSinkId)
+    enumerateOutputDevices,  // Function to refresh output device list
+    // AGC/NS toggles for echo troubleshooting (NEW)
+    disableAGC,        // State: whether AGC is disabled
+    disableNS,         // State: whether NS is disabled
+    toggleAGC,         // Function to toggle AGC on/off
+    toggleNS,          // Function to toggle NS on/off
   };
 };
 
