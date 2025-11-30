@@ -9,8 +9,14 @@
 class CryptoService {
   constructor() {
     this.keyPair = null;
-    this.sharedKeys = new Map(); // Map of userId -> derived encryption key
-    this.groupKeys = new Map(); // Map of groupId -> group AES key
+    this.sharedKeys = new Map(); // Map of userId -> { key: CryptoKey, publicKey: string }
+  }
+
+  /**
+   * Check if crypto is initialized
+   */
+  isInitialized() {
+    return this.keyPair !== null && this.keyPair.publicKey !== null;
   }
 
   /**
@@ -41,7 +47,7 @@ class CryptoService {
    * Export public key to base64 for sharing with other users
    */
   async exportPublicKey() {
-    if (!this.keyPair) {
+    if (!this.keyPair || !this.keyPair.publicKey) {
       throw new Error('Crypto not initialized. Call initialize() first.');
     }
 
@@ -50,7 +56,6 @@ class CryptoService {
         'raw',
         this.keyPair.publicKey
       );
-      
       return this.arrayBufferToBase64(exported);
     } catch (error) {
       console.error('Failed to export public key:', error);
@@ -61,11 +66,10 @@ class CryptoService {
   /**
    * Import another user's public key from base64
    */
-  async importPublicKey(publicKeyBase64) {
+  async importPublicKey(base64PublicKey) {
     try {
-      const keyData = this.base64ToArrayBuffer(publicKeyBase64);
-      
-      const importedKey = await window.crypto.subtle.importKey(
+      const keyData = this.base64ToArrayBuffer(base64PublicKey);
+      return await window.crypto.subtle.importKey(
         'raw',
         keyData,
         {
@@ -73,10 +77,8 @@ class CryptoService {
           namedCurve: 'P-256',
         },
         true,
-        []
+        [] // public keys don't need usage permissions
       );
-
-      return importedKey;
     } catch (error) {
       console.error('Failed to import public key:', error);
       throw error;
@@ -84,23 +86,30 @@ class CryptoService {
   }
 
   /**
-   * Derive a shared AES-GCM key with another user
-   * Uses ECDH to compute shared secret, then derives AES key
+   * Derive shared secret key from other user's public key
    */
   async deriveSharedKey(otherUserPublicKeyBase64, userId) {
     if (!this.keyPair) {
       throw new Error('Crypto not initialized');
     }
 
-    // Check if we already have this key cached
+    // Check if we already have this key cached WITH validation
     if (this.sharedKeys.has(userId)) {
-      return this.sharedKeys.get(userId);
+      const cached = this.sharedKeys.get(userId);
+      
+      // CRITICAL: Validate cached key matches current public key
+      if (cached.publicKey === otherUserPublicKeyBase64) {
+        console.log(`✅ Using cached shared key for user: ${userId}`);
+        return cached.key;
+      } else {
+        console.warn(`⚠️ Public key mismatch for user ${userId}! Clearing cache.`);
+        this.sharedKeys.delete(userId);
+      }
     }
 
     try {
-      // Import the other user's public key
       const otherPublicKey = await this.importPublicKey(otherUserPublicKeyBase64);
-
+      
       // Derive shared secret using ECDH
       const sharedSecret = await window.crypto.subtle.deriveBits(
         {
@@ -111,21 +120,22 @@ class CryptoService {
         256 // 256 bits for AES-256
       );
 
-      // Derive AES-GCM key from shared secret
+      // Import the shared secret as an AES-GCM key
       const sharedKey = await window.crypto.subtle.importKey(
         'raw',
         sharedSecret,
-        {
-          name: 'AES-GCM',
-        },
-        false, // not extractable for security
+        { name: 'AES-GCM' },
+        false, // not extractable
         ['encrypt', 'decrypt']
       );
 
-      // Cache the derived key
-      this.sharedKeys.set(userId, sharedKey);
+      // Cache with public key for validation
+      this.sharedKeys.set(userId, {
+        key: sharedKey,
+        publicKey: otherUserPublicKeyBase64
+      });
+      
       console.log(`🔑 Derived shared key for user: ${userId}`);
-
       return sharedKey;
     } catch (error) {
       console.error('Failed to derive shared key:', error);
@@ -169,7 +179,7 @@ class CryptoService {
       };
     } catch (error) {
       console.error('Encryption failed:', error);
-      throw error;
+      throw new Error('Failed to encrypt message');
     }
   }
 
@@ -181,34 +191,62 @@ class CryptoService {
     try {
       const { ciphertext, iv, authTag } = encryptedData;
 
-      // Convert from base64 to ArrayBuffer
-      const ciphertextBuffer = this.base64ToArrayBuffer(ciphertext);
-      const ivBuffer = this.base64ToArrayBuffer(iv);
-      const authTagBuffer = this.base64ToArrayBuffer(authTag);
+      // Validate required fields
+      if (!ciphertext || !iv || !authTag) {
+        throw new Error('Missing required encryption fields (ciphertext, iv, or authTag)');
+      }
 
-      // Concatenate ciphertext and auth tag (required by Web Crypto API)
-      const combinedBuffer = new Uint8Array(
-        ciphertextBuffer.byteLength + authTagBuffer.byteLength
-      );
-      combinedBuffer.set(new Uint8Array(ciphertextBuffer), 0);
-      combinedBuffer.set(new Uint8Array(authTagBuffer), ciphertextBuffer.byteLength);
+      // Validate base64 format
+      try {
+        const ciphertextBuffer = this.base64ToArrayBuffer(ciphertext);
+        const ivBuffer = this.base64ToArrayBuffer(iv);
+        const authTagBuffer = this.base64ToArrayBuffer(authTag);
 
-      // Decrypt using AES-GCM
-      const plaintextBuffer = await window.crypto.subtle.decrypt(
-        {
-          name: 'AES-GCM',
-          iv: ivBuffer,
-          tagLength: 128,
-        },
-        sharedKey,
-        combinedBuffer
-      );
+        // Validate IV length (should be 12 bytes for GCM)
+        if (ivBuffer.byteLength !== 12) {
+          throw new Error(`Invalid IV length: expected 12 bytes, got ${ivBuffer.byteLength}`);
+        }
 
-      // Convert back to string
-      const decoder = new TextDecoder();
-      return decoder.decode(plaintextBuffer);
+        // Validate auth tag length (should be 16 bytes for 128-bit tag)
+        if (authTagBuffer.byteLength !== 16) {
+          throw new Error(`Invalid auth tag length: expected 16 bytes, got ${authTagBuffer.byteLength}`);
+        }
+
+        // Concatenate ciphertext and auth tag (required by Web Crypto API)
+        const combinedBuffer = new Uint8Array(
+          ciphertextBuffer.byteLength + authTagBuffer.byteLength
+        );
+        combinedBuffer.set(new Uint8Array(ciphertextBuffer), 0);
+        combinedBuffer.set(new Uint8Array(authTagBuffer), ciphertextBuffer.byteLength);
+
+        // Decrypt using AES-GCM
+        const plaintextBuffer = await window.crypto.subtle.decrypt(
+          {
+            name: 'AES-GCM',
+            iv: ivBuffer,
+            tagLength: 128,
+          },
+          sharedKey,
+          combinedBuffer
+        );
+
+        // Convert back to string
+        const decoder = new TextDecoder();
+        return decoder.decode(plaintextBuffer);
+      } catch (base64Error) {
+        if (base64Error.message.includes('Invalid') || base64Error.message.includes('Missing')) {
+          throw base64Error;
+        }
+        throw new Error('Invalid base64 encoding in encrypted data');
+      }
     } catch (error) {
-      console.error('Decryption failed:', error);
+      // Provide more specific error messages
+      if (error.name === 'OperationError' || error.message.includes('decrypt')) {
+        // This is likely a key mismatch or corrupted data
+        console.error(' Decryption failed (likely key mismatch or corrupted data):', error.name);
+      } else {
+        console.error(' Decryption failed:', error.message || error);
+      }
       throw new Error('Failed to decrypt message. Message may be corrupted or key mismatch.');
     }
   }
@@ -223,216 +261,56 @@ class CryptoService {
   }
 
   /**
-   * Decrypt message from a specific user
+   * Decrypt message from a specific user WITH RETRY
    * Convenience method that handles key derivation
    */
   async decryptFromUser(encryptedData, otherUserPublicKey, userId) {
-    const sharedKey = await this.deriveSharedKey(otherUserPublicKey, userId);
-    return await this.decryptMessage(encryptedData, sharedKey);
-  }
-
-  /**
-   * Generate a new random AES-GCM key for group encryption
-   * This key will be shared among all group members (encrypted for each)
-   */
-  async generateGroupKey() {
     try {
-      const groupKey = await window.crypto.subtle.generateKey(
-        {
-          name: 'AES-GCM',
-          length: 256,
-        },
-        true, // extractable - we need to export it to encrypt for each member
-        ['encrypt', 'decrypt']
-      );
-
-      console.log('🔑 Generated new group encryption key');
-      return groupKey;
+      const sharedKey = await this.deriveSharedKey(otherUserPublicKey, userId);
+      return await this.decryptMessage(encryptedData, sharedKey);
     } catch (error) {
-      console.error('Failed to generate group key:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Export AES key to raw format (for encrypting with member's public key)
-   */
-  async exportGroupKey(groupKey) {
-    try {
-      const exported = await window.crypto.subtle.exportKey('raw', groupKey);
-      return this.arrayBufferToBase64(exported);
-    } catch (error) {
-      console.error('Failed to export group key:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Import raw AES key (after decrypting with private key)
-   */
-  async importGroupKey(groupKeyBase64) {
-    try {
-      const keyData = this.base64ToArrayBuffer(groupKeyBase64);
-
-      const importedKey = await window.crypto.subtle.importKey(
-        'raw',
-        keyData,
-        {
-          name: 'AES-GCM',
-        },
-        false, // not extractable once imported
-        ['encrypt', 'decrypt']
-      );
-
-      return importedKey;
-    } catch (error) {
-      console.error('Failed to import group key:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Encrypt the group key with a member's ECDH public key
-   * This allows each member to decrypt the group key with their private key
-   */
-  async encryptGroupKeyForMember(groupKey, memberPublicKeyBase64, memberId) {
-    try {
-      // Derive shared key with the member using ECDH
-      const sharedKey = await this.deriveSharedKey(memberPublicKeyBase64, memberId);
-
-      // Export the group key to raw bytes
-      const groupKeyRaw = await window.crypto.subtle.exportKey('raw', groupKey);
-
-      // Encrypt the raw group key using the shared key
-      const iv = window.crypto.getRandomValues(new Uint8Array(12));
-
-      const encryptedBuffer = await window.crypto.subtle.encrypt(
-        {
-          name: 'AES-GCM',
-          iv: iv,
-          tagLength: 128,
-        },
-        sharedKey,
-        groupKeyRaw
-      );
-
-      // Split ciphertext and auth tag
-      const ciphertext = encryptedBuffer.slice(0, -16);
-      const authTag = encryptedBuffer.slice(-16);
-
-      return {
-        encryptedGroupKey: this.arrayBufferToBase64(ciphertext),
-        iv: this.arrayBufferToBase64(iv),
-        authTag: this.arrayBufferToBase64(authTag),
-      };
-    } catch (error) {
-      console.error('Failed to encrypt group key for member:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Decrypt the group key using our private key
-   * The group key was encrypted with our public key by another member
-   */
-  async decryptGroupKey(encryptedGroupKeyData, senderPublicKeyBase64, senderId, groupId) {
-    try {
-      // Check if we already have this group key cached
-      if (this.groupKeys.has(groupId)) {
-        return this.groupKeys.get(groupId);
+      // If decryption fails, clear cache and retry ONCE
+      // Only retry if it's not a clear format error
+      if (error.message && !error.message.includes('Invalid') && !error.message.includes('Missing')) {
+        console.warn(`⚠️ Initial decryption failed for user ${userId}. Clearing cache and retrying.`);
+        this.sharedKeys.delete(userId);
+        
+        try {
+          const retryKey = await this.deriveSharedKey(otherUserPublicKey, userId);
+          return await this.decryptMessage(encryptedData, retryKey);
+        } catch (retryError) {
+          // Suppress retry error - it's likely an old message with different keys
+          throw retryError;
+        }
+      } else {
+        // Format error - don't retry
+        throw error;
       }
-
-      const { encryptedGroupKey, iv, authTag } = encryptedGroupKeyData;
-
-      // Derive shared key with the sender
-      const sharedKey = await this.deriveSharedKey(senderPublicKeyBase64, senderId);
-
-      // Convert from base64
-      const ciphertextBuffer = this.base64ToArrayBuffer(encryptedGroupKey);
-      const ivBuffer = this.base64ToArrayBuffer(iv);
-      const authTagBuffer = this.base64ToArrayBuffer(authTag);
-
-      // Combine ciphertext and auth tag
-      const combinedBuffer = new Uint8Array(
-        ciphertextBuffer.byteLength + authTagBuffer.byteLength
-      );
-      combinedBuffer.set(new Uint8Array(ciphertextBuffer), 0);
-      combinedBuffer.set(new Uint8Array(authTagBuffer), ciphertextBuffer.byteLength);
-
-      // Decrypt to get the raw group key
-      const groupKeyRaw = await window.crypto.subtle.decrypt(
-        {
-          name: 'AES-GCM',
-          iv: ivBuffer,
-          tagLength: 128,
-        },
-        sharedKey,
-        combinedBuffer
-      );
-
-      // Import the raw group key
-      const groupKey = await window.crypto.subtle.importKey(
-        'raw',
-        groupKeyRaw,
-        {
-          name: 'AES-GCM',
-        },
-        false,
-        ['encrypt', 'decrypt']
-      );
-
-      // Cache the group key
-      this.groupKeys.set(groupId, groupKey);
-      console.log(`🔑 Decrypted and cached group key for group: ${groupId}`);
-
-      return groupKey;
-    } catch (error) {
-      console.error('Failed to decrypt group key:', error);
-      throw error;
     }
   }
 
   /**
-   * Encrypt a message for a group using the group's shared key
-   */
-  async encryptGroupMessage(plaintext, groupKey) {
-    return await this.encryptMessage(plaintext, groupKey);
-  }
-
-  /**
-   * Decrypt a group message using the group's shared key
-   */
-  async decryptGroupMessage(encryptedData, groupKey) {
-    return await this.decryptMessage(encryptedData, groupKey);
-  }
-
-  /**
-   * Get cached group key
-   */
-  getGroupKey(groupId) {
-    return this.groupKeys.get(groupId);
-  }
-
-  /**
-   * Cache a group key
-   */
-  setGroupKey(groupId, groupKey) {
-    this.groupKeys.set(groupId, groupKey);
-    console.log(`🔑 Cached group key for group: ${groupId}`);
-  }
-
-  /**
-   * Clear cached keys (call on logout)
+   * Clear in-memory cached keys (call on logout)
+   * IMPORTANT: This does NOT clear localStorage - keys persist for next login!
    */
   clearKeys() {
     this.sharedKeys.clear();
-    this.groupKeys.clear();
     this.keyPair = null;
-    console.log('🔒 Crypto keys cleared');
+    console.log('🗑️ In-memory crypto keys cleared (localStorage keys preserved)');
   }
 
   /**
-   * Utility: ArrayBuffer to Base64
+   * DANGER: Permanently delete keys from localStorage
+   * Only call this if user wants to delete their encryption keys!
+   */
+  deleteKeysFromStorage(userId) {
+    localStorage.removeItem(`privateKey_${userId}`);
+    localStorage.removeItem(`publicKey_${userId}`);
+    console.warn('⚠️ KEYS DELETED FROM STORAGE! Old messages will be unreadable!');
+  }
+
+  /**
+   * Helper: Convert ArrayBuffer to Base64
    */
   arrayBufferToBase64(buffer) {
     const bytes = new Uint8Array(buffer);
@@ -440,14 +318,14 @@ class CryptoService {
     for (let i = 0; i < bytes.byteLength; i++) {
       binary += String.fromCharCode(bytes[i]);
     }
-    return window.btoa(binary);
+    return btoa(binary);
   }
 
   /**
-   * Utility: Base64 to ArrayBuffer
+   * Helper: Convert Base64 to ArrayBuffer
    */
   base64ToArrayBuffer(base64) {
-    const binary = window.atob(base64);
+    const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) {
       bytes[i] = binary.charCodeAt(i);
@@ -456,44 +334,83 @@ class CryptoService {
   }
 
   /**
-   * Check if crypto is initialized
+   * Save keys to localStorage
+   * CRITICAL: This ensures keys persist across logout/login!
    */
-  isInitialized() {
-    return this.keyPair !== null;
-  }
+  async saveKeys(userId) {
+    if (!this.keyPair) {
+      console.warn('⚠️ No keys to save');
+      return false;
+    }
 
-  /**
-   * Save private key to localStorage (encrypted with password in production)
-   * WARNING: This is simplified. In production, encrypt with user password
-   */
-  async savePrivateKey(userId) {
     try {
-      const exported = await window.crypto.subtle.exportKey(
+      console.log(`💾 Saving keys for user: ${userId}`);
+      
+      // Export private key
+      const privateKeyData = await window.crypto.subtle.exportKey(
         'pkcs8',
         this.keyPair.privateKey
       );
-      const base64 = this.arrayBufferToBase64(exported);
-      localStorage.setItem(`privateKey_${userId}`, base64);
-      console.log('🔐 Private key saved to localStorage');
+      
+      // Export public key
+      const publicKeyData = await window.crypto.subtle.exportKey(
+        'raw',
+        this.keyPair.publicKey
+      );
+
+      // Save both to localStorage with userId
+      const privateKeyBase64 = this.arrayBufferToBase64(privateKeyData);
+      const publicKeyBase64 = this.arrayBufferToBase64(publicKeyData);
+      
+      localStorage.setItem(`privateKey_${userId}`, privateKeyBase64);
+      localStorage.setItem(`publicKey_${userId}`, publicKeyBase64);
+      
+      // Verify they were saved
+      const savedPrivate = localStorage.getItem(`privateKey_${userId}`);
+      const savedPublic = localStorage.getItem(`publicKey_${userId}`);
+      
+      if (savedPrivate && savedPublic) {
+        console.log('✅ Keys saved to localStorage successfully');
+        console.log(`   - Private key length: ${savedPrivate.length} chars`);
+        console.log(`   - Public key length: ${savedPublic.length} chars`);
+        return true;
+      } else {
+        console.error('❌ Keys were not saved to localStorage!');
+        return false;
+      }
     } catch (error) {
-      console.error('Failed to save private key:', error);
+      console.error('❌ Failed to save keys:', error);
+      return false;
     }
   }
 
   /**
-   * Load private key from localStorage
+   * Load keys from localStorage
+   * CRITICAL: This restores keys on login!
    */
-  async loadPrivateKey(userId) {
+  async loadKeys(userId) {
     try {
-      const base64 = localStorage.getItem(`privateKey_${userId}`);
-      if (!base64) {
+      console.log(`🔍 Attempting to load keys for user: ${userId}`);
+      
+      const privateKeyBase64 = localStorage.getItem(`privateKey_${userId}`);
+      const publicKeyBase64 = localStorage.getItem(`publicKey_${userId}`);
+
+      if (!privateKeyBase64 || !publicKeyBase64) {
+        console.log('📭 No saved keys found in localStorage');
+        console.log(`   - Checked for: privateKey_${userId}`);
+        console.log(`   - Checked for: publicKey_${userId}`);
         return false;
       }
 
-      const keyData = this.base64ToArrayBuffer(base64);
+      console.log('📦 Found saved keys in localStorage');
+      console.log(`   - Private key length: ${privateKeyBase64.length} chars`);
+      console.log(`   - Public key length: ${publicKeyBase64.length} chars`);
+
+      // Import private key
+      const privateKeyData = this.base64ToArrayBuffer(privateKeyBase64);
       const privateKey = await window.crypto.subtle.importKey(
         'pkcs8',
-        keyData,
+        privateKeyData,
         {
           name: 'ECDH',
           namedCurve: 'P-256',
@@ -502,13 +419,25 @@ class CryptoService {
         ['deriveKey', 'deriveBits']
       );
 
-      // Also need to reconstruct the public key
-      // In production, store this separately or derive from private key
-      this.keyPair = { privateKey, publicKey: null };
-      console.log('🔐 Private key loaded from localStorage');
+      // Import public key
+      const publicKeyData = this.base64ToArrayBuffer(publicKeyBase64);
+      const publicKey = await window.crypto.subtle.importKey(
+        'raw',
+        publicKeyData,
+        {
+          name: 'ECDH',
+          namedCurve: 'P-256',
+        },
+        true,
+        []
+      );
+
+      this.keyPair = { privateKey, publicKey };
+      console.log('✅ Keys loaded and imported successfully');
       return true;
     } catch (error) {
-      console.error('Failed to load private key:', error);
+      console.error('❌ Failed to load keys:', error);
+      console.error('   Error details:', error.message);
       return false;
     }
   }

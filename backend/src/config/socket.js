@@ -308,34 +308,9 @@ exports.init = (server, corsOptions) => {
         });
 
         console.log(`[BACKEND] Call initiated confirmation sent to caller user room: ${callerId}`);
-
-        // Set timeout to mark call as missed if not answered within 25 seconds
-        setTimeout(async () => {
-          try {
-            const currentCall = await Call.findById(call._id);
-            // Only mark as missed if still in 'missed' status (not answered or declined)
-            if (currentCall && currentCall.status === 'missed') {
-              await Call.findByIdAndUpdate(
-                call._id,
-                {
-                  status: 'missed',
-                  endTime: new Date()
-                },
-                { new: true }
-              );
-              console.log(`[BACKEND] Call ${call._id} automatically marked as missed after 25s timeout`);
-              
-              // Notify caller that call was missed (timeout)
-              io.to(callerId.toString()).emit("voice-call:declined", {
-                callId: call._id.toString(),
-                isTimeout: true,
-                status: 'missed'
-              });
-            }
-          } catch (error) {
-            console.error(`[BACKEND] Error in call timeout handler:`, error);
-          }
-        }, 25000); // 25 seconds
+        
+        // Note: Frontend handles the 25-second timeout for incoming calls
+        // Backend timeout removed to prevent duplicate events
       } catch (error) {
         console.error("[BACKEND] Error initiating voice call:", error);
         socket.emit("voice-call:error", { message: "Failed to initiate call" });
@@ -493,7 +468,7 @@ exports.init = (server, corsOptions) => {
 
     // WebRTC Signaling Events
     socket.on("voice-call:offer", async (data) => {
-      const { offer, callId, from, to } = data;
+      const { offer, encryptedData, isEncrypted, encrypted, callId, from, to } = data;
 
       // Fix 5: Validate sender is authenticated and matches 'from' field
       if (!socketUser || socketUser.toString() !== from.toString()) {
@@ -518,14 +493,27 @@ exports.init = (server, corsOptions) => {
           return;
         }
 
-        // Forward offer to receiver
-        io.to(to.toString()).emit("voice-call:offer", {
-          offer,
+        // Forward offer to receiver (encrypted or unencrypted)
+        // Server acts as relay - does not decrypt
+        const payload = {
           callId,
           from
-        });
+        };
 
-        console.log(`[SIGNALING] WebRTC offer forwarded from ${from} to ${to}`);
+        // Check if payload is encrypted
+        if (isEncrypted || encrypted === true) {
+          // Encrypted payload
+          payload.encryptedData = encryptedData;
+          payload.isEncrypted = true;
+          console.log(`[SIGNALING] Forwarding encrypted WebRTC offer from ${from} to ${to}`);
+        } else {
+          // Unencrypted payload (backward compatibility)
+          payload.offer = offer;
+          payload.encrypted = false;
+          console.log(`[SIGNALING] Forwarding unencrypted WebRTC offer from ${from} to ${to}`);
+        }
+
+        io.to(to.toString()).emit("voice-call:offer", payload);
       } catch (err) {
         console.error('[SIGNALING] Error validating call:', err);
         socket.emit('voice-call:error', { message: 'Failed to validate call' });
@@ -533,7 +521,7 @@ exports.init = (server, corsOptions) => {
     });
 
     socket.on("voice-call:answer", async (data) => {
-      const { answer, callId, from, to } = data;
+      const { answer, encryptedData, isEncrypted, encrypted, callId, from, to } = data;
 
       // Fix 5: Validate sender is authenticated and matches 'from' field
       if (!socketUser || socketUser.toString() !== from.toString()) {
@@ -558,14 +546,27 @@ exports.init = (server, corsOptions) => {
           return;
         }
 
-        // Forward answer to caller
-        io.to(to.toString()).emit("voice-call:answer", {
-          answer,
+        // Forward answer to caller (encrypted or unencrypted)
+        // Server acts as relay - does not decrypt
+        const payload = {
           callId,
           from
-        });
+        };
 
-        console.log(`[SIGNALING] WebRTC answer forwarded from ${from} to ${to}`);
+        // Check if payload is encrypted
+        if (isEncrypted || encrypted === true) {
+          // Encrypted payload
+          payload.encryptedData = encryptedData;
+          payload.isEncrypted = true;
+          console.log(`[SIGNALING] Forwarding encrypted WebRTC answer from ${from} to ${to}`);
+        } else {
+          // Unencrypted payload (backward compatibility)
+          payload.answer = answer;
+          payload.encrypted = false;
+          console.log(`[SIGNALING] Forwarding unencrypted WebRTC answer from ${from} to ${to}`);
+        }
+
+        io.to(to.toString()).emit("voice-call:answer", payload);
       } catch (err) {
         console.error('[SIGNALING] Error validating call:', err);
         socket.emit('voice-call:error', { message: 'Failed to validate call' });
@@ -573,7 +574,7 @@ exports.init = (server, corsOptions) => {
     });
 
     socket.on("voice-call:ice-candidate", (data) => {
-      const { candidate, callId, from, to } = data;
+      const { candidate, encryptedData, isEncrypted, encrypted, callId, from, to } = data;
 
       // Fix 5: Validate sender is authenticated and matches 'from' field
       // Note: We don't validate the call for ICE candidates as it's too expensive
@@ -583,12 +584,25 @@ exports.init = (server, corsOptions) => {
         return; // Silently drop - ICE candidates are not critical
       }
 
-      // Forward ICE candidate to other party
-      io.to(to.toString()).emit("voice-call:ice-candidate", {
-        candidate,
+      // Forward ICE candidate to other party (encrypted or unencrypted)
+      // Server acts as relay - does not decrypt
+      const payload = {
         callId,
         from
-      });
+      };
+
+      // Check if payload is encrypted
+      if (isEncrypted || encrypted === true) {
+        // Encrypted payload
+        payload.encryptedData = encryptedData;
+        payload.isEncrypted = true;
+      } else {
+        // Unencrypted payload (backward compatibility)
+        payload.candidate = candidate;
+        payload.encrypted = false;
+      }
+
+      io.to(to.toString()).emit("voice-call:ice-candidate", payload);
     });
 
     socket.on("error", (err) => {
