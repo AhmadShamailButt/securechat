@@ -189,14 +189,45 @@ class CryptoService {
    */
   async decryptMessage(encryptedData, sharedKey) {
     try {
-      const { ciphertext, iv, authTag } = encryptedData;
+      // Validate encryptedData structure
+      if (!encryptedData || typeof encryptedData !== 'object') {
+        throw new Error('Invalid encryptedData: must be an object');
+      }
+
+      // Handle case where encryptedData might be a string (JSON) - parse it
+      let data = encryptedData;
+      if (typeof encryptedData === 'string') {
+        try {
+          data = JSON.parse(encryptedData);
+        } catch (parseErr) {
+          throw new Error('Invalid encryptedData format: cannot parse as JSON');
+        }
+      }
+
+      const { ciphertext, iv, authTag } = data;
 
       // Validate required fields
       if (!ciphertext || !iv || !authTag) {
+        console.error('[DECRYPT] Missing required fields:', {
+          hasCiphertext: !!ciphertext,
+          hasIv: !!iv,
+          hasAuthTag: !!authTag,
+          dataKeys: Object.keys(data)
+        });
         throw new Error('Missing required encryption fields (ciphertext, iv, or authTag)');
       }
 
-      // Validate base64 format
+      // Validate that fields are strings
+      if (typeof ciphertext !== 'string' || typeof iv !== 'string' || typeof authTag !== 'string') {
+        console.error('[DECRYPT] Invalid field types:', {
+          ciphertextType: typeof ciphertext,
+          ivType: typeof iv,
+          authTagType: typeof authTag
+        });
+        throw new Error('Encryption fields must be strings (base64)');
+      }
+
+      // Validate base64 format with better error handling
       try {
         const ciphertextBuffer = this.base64ToArrayBuffer(ciphertext);
         const ivBuffer = this.base64ToArrayBuffer(iv);
@@ -234,18 +265,30 @@ class CryptoService {
         const decoder = new TextDecoder();
         return decoder.decode(plaintextBuffer);
       } catch (base64Error) {
-        if (base64Error.message.includes('Invalid') || base64Error.message.includes('Missing')) {
+        // Log detailed error information
+        console.error('[DECRYPT] Base64 decoding error:', {
+          message: base64Error.message,
+          name: base64Error.name,
+          ciphertextLength: ciphertext?.length,
+          ivLength: iv?.length,
+          authTagLength: authTag?.length,
+          ciphertextPreview: ciphertext?.substring(0, 30),
+          ivPreview: iv?.substring(0, 30),
+          authTagPreview: authTag?.substring(0, 30)
+        });
+        
+        if (base64Error.message && (base64Error.message.includes('Invalid') || base64Error.message.includes('Missing'))) {
           throw base64Error;
         }
-        throw new Error('Invalid base64 encoding in encrypted data');
+        throw new Error('Invalid base64 encoding in encrypted data: ' + (base64Error.message || base64Error.name || 'Unknown error'));
       }
     } catch (error) {
       // Provide more specific error messages
       if (error.name === 'OperationError' || error.message.includes('decrypt')) {
         // This is likely a key mismatch or corrupted data
-        console.error(' Decryption failed (likely key mismatch or corrupted data):', error.name);
+        console.error('[DECRYPT] Decryption failed (likely key mismatch or corrupted data):', error.name);
       } else {
-        console.error(' Decryption failed:', error.message || error);
+        console.error('[DECRYPT] Decryption failed:', error.message || error);
       }
       throw new Error('Failed to decrypt message. Message may be corrupted or key mismatch.');
     }
@@ -322,15 +365,94 @@ class CryptoService {
   }
 
   /**
+   * Helper: Validate base64 string format
+   */
+  isValidBase64(str) {
+    if (!str || typeof str !== 'string') return false;
+    // Base64 should only contain A-Z, a-z, 0-9, +, /, =, and whitespace
+    const base64Regex = /^[A-Za-z0-9+/=\s\-_]*$/;
+    return base64Regex.test(str);
+  }
+
+  /**
+   * Helper: Normalize base64 string (remove whitespace, handle URL encoding)
+   */
+  normalizeBase64(base64) {
+    if (!base64 || typeof base64 !== 'string') {
+      throw new Error('Invalid base64 input: must be a non-empty string');
+    }
+    
+    // Check if it's a valid base64 string first
+    if (!this.isValidBase64(base64)) {
+      console.error('[BASE64] Invalid base64 characters detected:', {
+        length: base64.length,
+        preview: base64.substring(0, 50),
+        hasInvalidChars: !/^[A-Za-z0-9+/=\s\-_]*$/.test(base64)
+      });
+      throw new Error('Invalid base64 characters detected');
+    }
+    
+    // Remove whitespace (spaces, newlines, tabs)
+    let normalized = base64.replace(/\s+/g, '');
+    
+    // Handle URL-safe base64 encoding (replace - with + and _ with /)
+    normalized = normalized.replace(/-/g, '+').replace(/_/g, '/');
+    
+    // Add padding if needed (base64 strings should be multiples of 4)
+    while (normalized.length % 4 !== 0) {
+      normalized += '=';
+    }
+    
+    return normalized;
+  }
+
+  /**
    * Helper: Convert Base64 to ArrayBuffer
+   * Now handles corrupted base64 strings (whitespace, URL encoding)
    */
   base64ToArrayBuffer(base64) {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
+    try {
+      // Validate input
+      if (!base64 || typeof base64 !== 'string') {
+        throw new Error('Base64 input must be a non-empty string');
+      }
+      
+      // Normalize the base64 string first
+      const normalized = this.normalizeBase64(base64);
+      
+      // Try to decode
+      const binary = atob(normalized);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes.buffer;
+    } catch (error) {
+      // Capture all error details
+      const errorDetails = {
+        message: error.message || 'No message',
+        name: error.name || 'UnknownError',
+        stack: error.stack || 'No stack',
+        base64Length: base64?.length || 0,
+        base64Preview: base64 ? (base64.substring(0, 50) + (base64.length > 50 ? '...' : '')) : 'null',
+        base64LastChars: base64 ? base64.substring(Math.max(0, base64.length - 20)) : 'null',
+        base64FirstChars: base64 ? base64.substring(0, 20) : 'null'
+      };
+      
+      console.error('[BASE64] Failed to decode base64:', errorDetails);
+      
+      // Provide a more descriptive error message
+      let errorMsg = 'Invalid base64 encoding';
+      if (error.name === 'InvalidCharacterError' || error.name === 'DOMException') {
+        errorMsg = 'Invalid base64 characters detected - data may be corrupted during transmission';
+      } else if (error.message) {
+        errorMsg = error.message;
+      } else if (error.name) {
+        errorMsg = error.name;
+      }
+      
+      throw new Error(`Invalid base64 encoding in encrypted data: ${errorMsg}`);
     }
-    return bytes.buffer;
   }
 
   /**

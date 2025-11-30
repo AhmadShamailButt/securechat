@@ -19,15 +19,22 @@ export const SocketProvider = ({ children }) => {
   const [connectError, setConnectError] = useState(null);
 
   useEffect(() => {
-    // Create socket connection
+    console.log('[SOCKET] Initializing connection to:', API_URL);
+    
+    // Create socket connection with better error handling
     const socket = io(API_URL, {
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
-      transports: ['websocket', 'polling'],
+      transports: ['polling', 'websocket'], // Try polling first (more reliable), then websocket
       autoConnect: true,
       timeout: 20000,
-      withCredentials: true
+      withCredentials: true,
+      // Force polling if websocket fails
+      upgrade: true,
+      rememberUpgrade: false,
+      // Add path if needed (Socket.io default is /socket.io/)
+      path: '/socket.io/'
     });
 
     socketRef.current = socket;
@@ -45,14 +52,31 @@ export const SocketProvider = ({ children }) => {
       
       // Auto-reconnect for certain disconnect reasons
       if (reason === 'io server disconnect') {
+        console.log('🔄 Server disconnected, attempting to reconnect...');
         socket.connect();
+      } else if (reason === 'transport close') {
+        console.log('🔄 Transport closed, will attempt to reconnect...');
+      } else if (reason === 'transport error') {
+        console.log('🔄 Transport error, will attempt to reconnect...');
       }
     };
 
     const onConnectError = (error) => {
-      console.error('❌ Socket connection error:', error);
-      setConnectError(error.message);
+      console.error('❌ Socket connection error:', {
+        message: error.message,
+        type: error.type,
+        description: error.description,
+        context: error.context,
+        transport: error.transport,
+        API_URL: API_URL
+      });
+      setConnectError(error.message || 'Failed to connect to server');
       setIsConnected(false);
+      
+      // If websocket fails, try to force polling
+      if (error.type === 'TransportError' || error.message?.includes('websocket')) {
+        console.log('🔄 WebSocket failed, will retry with polling fallback');
+      }
     };
 
     const onReconnect = (attemptNumber) => {

@@ -87,6 +87,8 @@ export default function ChatPage() {
     endCall: endWebRTCCall,
     toggleMute: toggleWebRTCMute,
     isEncrypted: isCallEncrypted,
+    connectionQuality,
+    connectionStats,
   } = useVoiceCall(
     socket,
     activeCall?.callId,
@@ -427,6 +429,11 @@ export default function ChatPage() {
 
     const handleCallEnded = (data) => {
       console.log('[CALL] Call ended:', data);
+      // Clear incoming call if it exists (caller ended before receiver picked up)
+      if (incomingCall && incomingCall.callId === data.callId) {
+        dispatch(clearIncomingCall());
+        toast('Call ended by caller', { icon: 'ℹ️' });
+      }
       dispatch(endCall());
       endWebRTCCall();
       if (activeCall?.status === 'connected') {
@@ -788,6 +795,8 @@ export default function ChatPage() {
         isMuted={activeCall?.isMuted || false}
         isSpeakerOn={activeCall?.isSpeakerOn || false}
         isEncrypted={isCallEncrypted || false}
+        connectionQuality={connectionQuality || 'good'}
+        connectionStats={connectionStats}
         onToggleMute={handleToggleMute}
         onToggleSpeaker={handleToggleSpeaker}
         onEndCall={handleEndCall}
