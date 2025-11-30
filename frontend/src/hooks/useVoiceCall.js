@@ -72,14 +72,6 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
   const [disableAGC, setDisableAGC] = useState(false);
   const [disableNS, setDisableNS] = useState(false);
   const workingConstraintsRef = useRef(null); // Store which constraint combination worked
-  
-  // Echo prevention and volume control
-  const [currentVolume, setCurrentVolume] = useState(0.4); // Current remote audio volume
-  const [isSpeakerMuted, setIsSpeakerMuted] = useState(false); // Speaker mute state
-  const [echoDetected, setEchoDetected] = useState(false); // Echo detection state
-  const volumeDuckingActiveRef = useRef(false); // Track if volume ducking is active
-  const localAudioLevelRef = useRef(0); // Track local audio level for ducking
-  const echoDetectionRef = useRef({ lastLocalLevel: 0, lastRemoteLevel: 0, correlationCount: 0 });
 
   const peerConnectionRef = useRef(null);
   const remoteAudioRef = useRef(null);
@@ -264,42 +256,6 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
     });
   }, [localStream]);
 
-  // Toggle speaker mute - mutes remote audio when user is speaking to prevent feedback
-  const toggleSpeakerMute = useCallback(() => {
-    setIsSpeakerMuted(prev => {
-      const newValue = !prev;
-      console.log(`[AUDIO] Speaker mute ${newValue ? 'enabled' : 'disabled'}`);
-      
-      if (remoteAudioRef.current) {
-        if (newValue) {
-          // Mute remote audio
-          remoteAudioRef.current.volume = 0;
-          console.log('[AUDIO] Remote audio muted to prevent echo');
-        } else {
-          // Unmute and restore volume
-          remoteAudioRef.current.volume = currentVolume;
-          console.log('[AUDIO] Remote audio unmuted, volume restored to', currentVolume);
-        }
-      }
-      
-      toast.success(`Speaker mute ${newValue ? 'enabled' : 'disabled'}`);
-      return newValue;
-    });
-  }, [currentVolume]);
-
-  // Set remote audio volume (0.0 to 1.0)
-  const setRemoteVolume = useCallback((volume) => {
-    const clampedVolume = Math.max(0, Math.min(1, volume));
-    setCurrentVolume(clampedVolume);
-    
-    if (remoteAudioRef.current && !isSpeakerMuted) {
-      remoteAudioRef.current.volume = clampedVolume;
-      console.log('[AUDIO] Remote audio volume set to', clampedVolume);
-    }
-    
-    return clampedVolume;
-  }, [isSpeakerMuted]);
-
   // Request permission and enumerate devices after first getUserMedia call
   useEffect(() => {
     const requestDeviceAccess = async () => {
@@ -341,8 +297,8 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       
       // Set volume to reasonable level to prevent feedback loops
       // Lower volume reduces chance of echo if speakers are near microphone
-      // Reduced to 0.4 for aggressive echo prevention when using speakers (was 0.65, originally 0.8)
-      remoteAudioRef.current.volume = currentVolume;
+      // Reduced to 0.65 for better echo prevention (was 0.8)
+      remoteAudioRef.current.volume = 0.65;
       
       document.body.appendChild(remoteAudioRef.current);
     }
@@ -408,22 +364,10 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
         });
       }
       
-      // Set initial volume
-      if (!isSpeakerMuted) {
-        remoteAudioRef.current.volume = currentVolume;
-      }
-      
       // Attempt to play audio (will work if user has already interacted)
       playRemoteAudio();
     }
-  }, [remoteStream, playRemoteAudio, selectedOutputDeviceId, currentVolume, isSpeakerMuted]);
-
-  // Sync volume when currentVolume changes (if not muted)
-  useEffect(() => {
-    if (remoteAudioRef.current && !isSpeakerMuted && !volumeDuckingActiveRef.current) {
-      remoteAudioRef.current.volume = currentVolume;
-    }
-  }, [currentVolume, isSpeakerMuted]);
+  }, [remoteStream, playRemoteAudio, selectedOutputDeviceId]);
 
   // Audio level monitoring for local stream (read-only, no processing)
   // Note: This monitoring does NOT affect the actual WebRTC stream
@@ -469,7 +413,6 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
           }
           const average = sum / bufferLength;
           audioLevelRef.current = average;
-          localAudioLevelRef.current = average; // Store for volume ducking
           
           // Log warnings if audio levels are problematic
           if (average > 240) {
@@ -517,98 +460,6 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       }
     };
   }, [localStream]);
-
-  // Automatic volume ducking: Lower remote audio when user is speaking
-  useEffect(() => {
-    if (!localStream || !remoteAudioRef.current || !remoteStream) return;
-
-    const duckingInterval = setInterval(() => {
-      const localLevel = localAudioLevelRef.current;
-      const SPEAKING_THRESHOLD = 30; // Audio level threshold for detecting speech
-      const DUCKED_VOLUME = 0.2; // Volume when user is speaking
-      const NORMAL_VOLUME = currentVolume; // Normal volume when user is quiet
-
-      if (localLevel > SPEAKING_THRESHOLD && !isSpeakerMuted) {
-        // User is speaking - duck the remote audio
-        if (!volumeDuckingActiveRef.current) {
-          volumeDuckingActiveRef.current = true;
-          if (remoteAudioRef.current) {
-            remoteAudioRef.current.volume = DUCKED_VOLUME;
-            console.log('[AUDIO] Volume ducking activated (user speaking)');
-          }
-        }
-      } else {
-        // User is quiet - restore normal volume
-        if (volumeDuckingActiveRef.current) {
-          volumeDuckingActiveRef.current = false;
-          if (remoteAudioRef.current && !isSpeakerMuted) {
-            remoteAudioRef.current.volume = NORMAL_VOLUME;
-            console.log('[AUDIO] Volume ducking deactivated (user quiet)');
-          }
-        }
-      }
-    }, 100); // Check every 100ms for responsive ducking
-
-    return () => clearInterval(duckingInterval);
-  }, [localStream, remoteStream, currentVolume, isSpeakerMuted]);
-
-  // Echo detection: Detect correlation between local and remote audio
-  useEffect(() => {
-    if (!localStream || !remoteAudioRef.current || !remoteStream) return;
-
-    const echoDetectionInterval = setInterval(() => {
-      const localLevel = localAudioLevelRef.current;
-      const remoteLevel = remoteAudioRef.current ? 
-        (remoteAudioRef.current.volume * 100) : 0; // Approximate remote level
-      
-      const detection = echoDetectionRef.current;
-      
-      // Simple echo detection: if local audio is high and remote audio is playing,
-      // and they correlate in timing, likely echo
-      if (localLevel > 40 && remoteLevel > 20) {
-        detection.correlationCount++;
-        
-        // If correlation detected multiple times, likely echo
-        if (detection.correlationCount > 5 && !echoDetected) {
-          setEchoDetected(true);
-          console.warn('[AUDIO] Echo detected! Attempting automatic fixes...');
-          
-          // Automatic fix attempts
-          // 1. Lower volume further
-          if (remoteAudioRef.current && remoteAudioRef.current.volume > 0.3) {
-            const newVolume = Math.max(0.2, remoteAudioRef.current.volume - 0.1);
-            remoteAudioRef.current.volume = newVolume;
-            setCurrentVolume(newVolume);
-            console.log('[AUDIO] Auto-fix: Lowered volume to', newVolume);
-          }
-          
-          // 2. Show user warning with actionable guidance
-          toast('Echo detected! Try: 1) Use headphones 2) Enable speaker mute 3) Lower volume', {
-            icon: '⚠️',
-            duration: 10000,
-            // Note: UI can listen to echoDetected state and show buttons
-          });
-          
-          // Log actionable steps
-          console.warn('[AUDIO] Echo detected - Recommended actions:');
-          console.warn('  1. Use headphones (best solution)');
-          console.warn('  2. Enable speaker mute (toggleSpeakerMute())');
-          console.warn('  3. Lower volume (setRemoteVolume(0.2))');
-          console.warn('  4. Disable AGC/NS if enabled (toggleAGC/toggleNS)');
-        }
-      } else {
-        // Reset correlation count if conditions not met
-        if (detection.correlationCount > 0) {
-          detection.correlationCount = Math.max(0, detection.correlationCount - 1);
-        }
-      }
-      
-      detection.lastLocalLevel = localLevel;
-      detection.lastRemoteLevel = remoteLevel;
-    }, 500); // Check every 500ms
-
-    return () => clearInterval(echoDetectionInterval);
-  }, [localStream, remoteStream, echoDetected]);
 
   // Helper function to queue signaling messages during disconnection
   const queueSignalingMessage = useCallback((eventType, payload) => {
@@ -1138,12 +989,11 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       }
 
       // Progressive constraint fallback for echo cancellation troubleshooting
-      // DEFAULT: Start with AEC-only mode to prevent interference with echo cancellation
-      // Only try other combinations if AEC-only fails
-      // Order: AEC only (default) → AEC+NS → AEC+AGC → All three
+      // Try different combinations to find what works best for echo prevention
+      // Order: AEC only → AEC+NS → AEC+AGC → All three
       const constraintCombinations = [
         {
-          name: 'AEC only (default - best for echo prevention)',
+          name: 'AEC only',
           constraints: {
             sampleRate: 48000,
             channelCount: 1,
@@ -2696,12 +2546,6 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
     disableNS,         // State: whether NS is disabled
     toggleAGC,         // Function to toggle AGC on/off
     toggleNS,          // Function to toggle NS on/off
-    // Echo prevention and volume control (NEW)
-    currentVolume,     // Current remote audio volume (0.0 to 1.0)
-    setRemoteVolume,   // Function to set remote audio volume
-    isSpeakerMuted,    // State: whether speaker mute is enabled
-    toggleSpeakerMute, // Function to toggle speaker mute (mutes remote audio during speech)
-    echoDetected,      // State: whether echo has been detected
   };
 };
 
