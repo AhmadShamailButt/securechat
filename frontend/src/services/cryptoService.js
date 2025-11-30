@@ -10,6 +10,7 @@ class CryptoService {
   constructor() {
     this.keyPair = null;
     this.sharedKeys = new Map(); // Map of userId -> { key: CryptoKey, publicKey: string }
+    this.groupKeys = new Map(); // Map of groupId -> CryptoKey (AES-GCM key for group)
   }
 
   /**
@@ -196,11 +197,12 @@ class CryptoService {
         throw new Error('Missing required encryption fields (ciphertext, iv, or authTag)');
       }
 
-      // Validate base64 format
+      // Validate base64 format with better error messages
+      let ciphertextBuffer, ivBuffer, authTagBuffer;
       try {
-        const ciphertextBuffer = this.base64ToArrayBuffer(ciphertext);
-        const ivBuffer = this.base64ToArrayBuffer(iv);
-        const authTagBuffer = this.base64ToArrayBuffer(authTag);
+        ciphertextBuffer = this.base64ToArrayBuffer(ciphertext);
+        ivBuffer = this.base64ToArrayBuffer(iv);
+        authTagBuffer = this.base64ToArrayBuffer(authTag);
 
         // Validate IV length (should be 12 bytes for GCM)
         if (ivBuffer.byteLength !== 12) {
@@ -234,10 +236,21 @@ class CryptoService {
         const decoder = new TextDecoder();
         return decoder.decode(plaintextBuffer);
       } catch (base64Error) {
+        // Provide more detailed error information
+        console.error('❌ Base64 validation failed:', {
+          error: base64Error.message,
+          ciphertextLength: ciphertext?.length || 0,
+          ivLength: iv?.length || 0,
+          authTagLength: authTag?.length || 0,
+          ciphertextPreview: ciphertext?.substring(0, 50) || 'N/A',
+          ivPreview: iv?.substring(0, 20) || 'N/A',
+          authTagPreview: authTag?.substring(0, 20) || 'N/A'
+        });
+        
         if (base64Error.message.includes('Invalid') || base64Error.message.includes('Missing')) {
           throw base64Error;
         }
-        throw new Error('Invalid base64 encoding in encrypted data');
+        throw new Error(`Invalid base64 encoding in encrypted data: ${base64Error.message}`);
       }
     } catch (error) {
       // Provide more specific error messages
@@ -290,11 +303,216 @@ class CryptoService {
   }
 
   /**
+   * Generate a new random AES-GCM key for group encryption
+   * This key will be shared among all group members (encrypted for each)
+   */
+  async generateGroupKey() {
+    try {
+      const groupKey = await window.crypto.subtle.generateKey(
+        {
+          name: 'AES-GCM',
+          length: 256,
+        },
+        true, // extractable - we need to export it to encrypt for each member
+        ['encrypt', 'decrypt']
+      );
+
+      console.log('🔑 Generated new group encryption key');
+      return groupKey;
+    } catch (error) {
+      console.error('Failed to generate group key:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Encrypt a group key for a specific member using their public key
+   * Returns: { encryptedGroupKey, iv, authTag } all in base64
+   */
+  async encryptGroupKeyForMember(groupKey, memberPublicKeyBase64, memberId) {
+    try {
+      // Export the group key to raw format (ArrayBuffer)
+      const groupKeyRaw = await window.crypto.subtle.exportKey('raw', groupKey);
+      
+      // Derive shared key with the member (using ECDH)
+      const sharedKey = await this.deriveSharedKey(memberPublicKeyBase64, memberId);
+      
+      // Convert group key ArrayBuffer to base64 string for encryption
+      const groupKeyBase64 = this.arrayBufferToBase64(groupKeyRaw);
+      
+      // Encrypt the group key using the shared key (AES-GCM)
+      const encrypted = await this.encryptMessage(groupKeyBase64, sharedKey);
+
+      return {
+        encryptedGroupKey: encrypted.ciphertext,
+        iv: encrypted.iv,
+        authTag: encrypted.authTag
+      };
+    } catch (error) {
+      console.error(`Failed to encrypt group key for member ${memberId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Decrypt a group key that was encrypted for the current user
+   * Expects: { encryptedGroupKey, iv, authTag } and sender's public key
+   */
+  async decryptGroupKey(encryptedGroupKeyData, senderPublicKeyBase64, senderId, groupId) {
+    try {
+      // Check if we already have this group key cached
+      if (this.groupKeys.has(groupId)) {
+        console.log(`🔑 Using cached group key for group: ${groupId}`);
+        return this.groupKeys.get(groupId);
+      }
+
+      console.log(`🔐 Decrypting group key for group ${groupId}...`);
+      console.log(`   Encrypted by user: ${senderId}`);
+
+      const { encryptedGroupKey, iv, authTag } = encryptedGroupKeyData;
+
+      if (!encryptedGroupKey || !iv || !authTag) {
+        throw new Error('Missing encryption data components');
+      }
+
+      // Validate base64 format
+      try {
+        this.base64ToArrayBuffer(encryptedGroupKey);
+        this.base64ToArrayBuffer(iv);
+        this.base64ToArrayBuffer(authTag);
+      } catch (base64Error) {
+        console.error(`❌ Invalid base64 encoding in group key data:`, base64Error.message);
+        throw new Error(`Invalid base64 encoding in encrypted group key: ${base64Error.message}`);
+      }
+
+      // Derive shared key with the sender (with retry on failure)
+      let sharedKey;
+      try {
+        // Clear any cached shared key for this user to force fresh derivation
+        // This helps if keys have changed
+        if (this.sharedKeys.has(senderId)) {
+          const cached = this.sharedKeys.get(senderId);
+          if (cached.publicKey !== senderPublicKeyBase64) {
+            console.warn(`⚠️ Public key mismatch for sender ${senderId}, clearing cache`);
+            this.sharedKeys.delete(senderId);
+          }
+        }
+        
+        sharedKey = await this.deriveSharedKey(senderPublicKeyBase64, senderId);
+      } catch (deriveError) {
+        console.error(`❌ Failed to derive shared key with sender ${senderId}:`, deriveError);
+        // Clear cache and retry once
+        this.sharedKeys.delete(senderId);
+        try {
+          sharedKey = await this.deriveSharedKey(senderPublicKeyBase64, senderId);
+        } catch (retryError) {
+          throw new Error(`Failed to derive shared key: ${retryError.message}`);
+        }
+      }
+
+      // Decrypt the group key (with retry on failure)
+      let decryptedGroupKeyBase64;
+      try {
+        decryptedGroupKeyBase64 = await this.decryptMessage(
+          {
+            ciphertext: encryptedGroupKey,
+            iv: iv,
+            authTag: authTag
+          },
+          sharedKey
+        );
+      } catch (decryptError) {
+        // If decryption fails, clear shared key cache and retry once
+        console.warn(`⚠️ Initial group key decryption failed. Clearing cache and retrying...`);
+        this.sharedKeys.delete(senderId);
+        
+        try {
+          // Re-derive shared key
+          sharedKey = await this.deriveSharedKey(senderPublicKeyBase64, senderId);
+          // Retry decryption
+          decryptedGroupKeyBase64 = await this.decryptMessage(
+            {
+              ciphertext: encryptedGroupKey,
+              iv: iv,
+              authTag: authTag
+            },
+            sharedKey
+          );
+        } catch (retryError) {
+          console.error(`❌ Retry decryption failed:`, retryError);
+          throw new Error(`Failed to decrypt group key: ${retryError.message}`);
+        }
+      }
+
+      // Convert from base64 back to ArrayBuffer
+      let groupKeyRaw;
+      try {
+        groupKeyRaw = this.base64ToArrayBuffer(decryptedGroupKeyBase64);
+      } catch (error) {
+        throw new Error(`Invalid group key format after decryption: ${error.message}`);
+      }
+
+      // Import the raw group key as an AES-GCM key
+      const groupKey = await window.crypto.subtle.importKey(
+        'raw',
+        groupKeyRaw,
+        {
+          name: 'AES-GCM',
+        },
+        false,
+        ['encrypt', 'decrypt']
+      );
+
+      // Cache the group key
+      this.groupKeys.set(groupId, groupKey);
+      console.log(`🔑 ✅ Decrypted and cached group key for group: ${groupId}`);
+
+      return groupKey;
+    } catch (error) {
+      console.error(`❌ Failed to decrypt group key for group ${groupId}:`, error);
+      console.error(`   Sender ID: ${senderId}`);
+      console.error(`   Error type: ${error.name}`);
+      console.error(`   Error message: ${error.message}`);
+      throw new Error(`Failed to decrypt group key: ${error.message}`);
+    }
+  }
+
+  /**
+   * Encrypt a message for a group using the group's shared key
+   */
+  async encryptGroupMessage(plaintext, groupKey) {
+    return await this.encryptMessage(plaintext, groupKey);
+  }
+
+  /**
+   * Decrypt a group message using the group's shared key
+   */
+  async decryptGroupMessage(encryptedData, groupKey) {
+    return await this.decryptMessage(encryptedData, groupKey);
+  }
+
+  /**
+   * Get cached group key
+   */
+  getGroupKey(groupId) {
+    return this.groupKeys.get(groupId);
+  }
+
+  /**
+   * Cache a group key
+   */
+  setGroupKey(groupId, groupKey) {
+    this.groupKeys.set(groupId, groupKey);
+    console.log(`🔑 Cached group key for group: ${groupId}`);
+  }
+
+  /**
    * Clear in-memory cached keys (call on logout)
    * IMPORTANT: This does NOT clear localStorage - keys persist for next login!
    */
   clearKeys() {
     this.sharedKeys.clear();
+    this.groupKeys.clear();
     this.keyPair = null;
     console.log('🗑️ In-memory crypto keys cleared (localStorage keys preserved)');
   }
@@ -323,14 +541,34 @@ class CryptoService {
 
   /**
    * Helper: Convert Base64 to ArrayBuffer
+   * Handles base64 strings with whitespace or URL encoding
    */
   base64ToArrayBuffer(base64) {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
+    if (!base64 || typeof base64 !== 'string') {
+      throw new Error('Invalid base64 input: must be a non-empty string');
     }
-    return bytes.buffer;
+    
+    // Clean the base64 string: remove whitespace and handle URL-safe base64
+    let cleaned = base64.trim().replace(/\s/g, '');
+    
+    // Handle URL-safe base64 (replace - with + and _ with /)
+    cleaned = cleaned.replace(/-/g, '+').replace(/_/g, '/');
+    
+    // Add padding if needed
+    while (cleaned.length % 4) {
+      cleaned += '=';
+    }
+    
+    try {
+      const binary = atob(cleaned);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes.buffer;
+    } catch (error) {
+      throw new Error(`Invalid base64 encoding: ${error.message}. Input length: ${base64.length}, cleaned length: ${cleaned.length}`);
+    }
   }
 
   /**

@@ -203,11 +203,31 @@ export async function fetchAndDecryptGroupKey(groupId, currentUserId, groupCreat
     // Fetch encrypted group key from server
     try {
       const encryptedKeyData = await getGroupKey(groupId, currentUserId);
+      
+      console.log(`📦 Fetched encrypted group key data:`, {
+        hasEncryptedKey: !!encryptedKeyData.encryptedGroupKey,
+        hasIv: !!encryptedKeyData.iv,
+        hasAuthTag: !!encryptedKeyData.authTag,
+        encryptedBy: encryptedKeyData.encryptedBy,
+        encryptedKeyLength: encryptedKeyData.encryptedGroupKey?.length || 0,
+        ivLength: encryptedKeyData.iv?.length || 0,
+        authTagLength: encryptedKeyData.authTag?.length || 0,
+        encryptedKeyPreview: encryptedKeyData.encryptedGroupKey?.substring(0, 50) || 'N/A',
+        ivPreview: encryptedKeyData.iv?.substring(0, 20) || 'N/A',
+        authTagPreview: encryptedKeyData.authTag?.substring(0, 20) || 'N/A'
+      });
 
       // Fetch the public key of whoever encrypted this key (usually the creator)
       const encryptorId = encryptedKeyData.encryptedBy || groupCreatorId;
+      console.log(`🔑 Fetching public key for encryptor: ${encryptorId}`);
+      
       const encryptorPublicKey = await fetchUserPublicKey(encryptorId);
+      
+      if (!encryptorPublicKey) {
+        throw new Error(`Public key not found for encryptor ${encryptorId}`);
+      }
 
+      console.log(`🔐 Attempting to decrypt group key...`);
       // Decrypt the group key
       groupKey = await cryptoService.decryptGroupKey(
         encryptedKeyData,
