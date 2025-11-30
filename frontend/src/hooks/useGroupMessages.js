@@ -93,6 +93,8 @@ export default function useGroupMessages(socket, activeGroup, user, isCryptoInit
         } catch (error) {
           // Check if this is a "creator only" error for non-creators
           const isCreatorOnlyError = error.message?.includes('Only group creator can initialize encryption');
+          const isKeyMismatch = error.message?.includes('key mismatch') || 
+                               error.message?.includes('Failed to decrypt');
           const isCurrentUserCreator = (user.id || user._id) === activeGroup.createdBy.id;
 
           if (isCreatorOnlyError && !isCurrentUserCreator) {
@@ -102,6 +104,14 @@ export default function useGroupMessages(socket, activeGroup, user, isCryptoInit
             if (!sessionStorage.getItem(`group-${activeGroup.id}-creator-notice-shown`)) {
               console.warn(`⚠️ Group encryption not initialized. Ask the group creator to send a message first.`);
               sessionStorage.setItem(`group-${activeGroup.id}-creator-notice-shown`, 'true');
+            }
+          } else if (isKeyMismatch && !isCurrentUserCreator) {
+            // Key mismatch - member's keys changed, need creator to re-encrypt
+            newDecrypted[msg.id] = '[Encryption key mismatch - waiting for creator to update]';
+            // Only log once to avoid console spam
+            if (!sessionStorage.getItem(`group-${activeGroup.id}-key-mismatch-shown`)) {
+              console.warn(`⚠️ Your encryption keys have changed. The group creator needs to open this group to update your encryption key.`);
+              sessionStorage.setItem(`group-${activeGroup.id}-key-mismatch-shown`, 'true');
             }
           } else {
             // Other decryption errors

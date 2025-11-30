@@ -180,6 +180,64 @@ export async function addMemberEncryptionKey(groupId, newMemberId, currentUserId
 }
 
 /**
+ * Re-encrypt group key for a member whose keys have changed
+ * This fixes key mismatches when a member regenerates their keys
+ *
+ * @param {string} groupId - The group ID
+ * @param {string} memberId - ID of the member to re-encrypt for
+ * @param {string} currentUserId - ID of the current user (must be creator or have group key)
+ * @param {string} groupCreatorId - ID of the group creator
+ * @returns {Promise<void>}
+ */
+export async function reEncryptGroupKeyForMember(groupId, memberId, currentUserId, groupCreatorId) {
+  try {
+    console.log(`🔐 Re-encrypting group key for member ${memberId} in group ${groupId}`);
+
+    // 1. Get the group key (from cache or server)
+    let groupKey = cryptoService.getGroupKey(groupId);
+
+    if (!groupKey) {
+      // Fetch encrypted group key for current user
+      const encryptedKeyData = await getGroupKey(groupId, currentUserId);
+
+      // Fetch the public key of whoever encrypted this key
+      const encryptorId = encryptedKeyData.encryptedBy || groupCreatorId;
+      const encryptorPublicKey = await fetchUserPublicKey(encryptorId);
+
+      // Decrypt the group key
+      groupKey = await cryptoService.decryptGroupKey(
+        encryptedKeyData,
+        encryptorPublicKey,
+        encryptorId,
+        groupId
+      );
+    }
+
+    // 2. Fetch member's current public key (may have changed)
+    const memberPublicKey = await fetchUserPublicKey(memberId);
+
+    // 3. Encrypt group key for member with their current public key
+    const encryptedKeyForMember = await cryptoService.encryptGroupKeyForMember(
+      groupKey,
+      memberPublicKey,
+      memberId
+    );
+
+    // 4. Store encrypted key on server (overwrites old one)
+    await storeGroupKey(groupId, {
+      userId: memberId,
+      encryptedBy: currentUserId,
+      ...encryptedKeyForMember
+    });
+
+    console.log(`✅ Group key re-encrypted for member ${memberId}`);
+  } catch (error) {
+    console.error(`Failed to re-encrypt group key for member ${memberId}:`, error);
+    throw error;
+  }
+}
+
+/**
  * Fetch and decrypt the group key for the current user
  *
  * @param {string} groupId - The group ID
@@ -237,8 +295,114 @@ export async function fetchAndDecryptGroupKey(groupId, currentUserId, groupCreat
       );
 
       console.log(`✅ Group key decrypted for group ${groupId}`);
+      
+      // If creator successfully decrypted, automatically re-encrypt for all members
+      // This ensures everyone's keys are up to date (fixes key mismatches)
+      // Runs in background - doesn't block
+      if (currentUserId.toString() === (groupCreatorId?.toString() || groupCreatorId) && groupMembers) {
+        // Run async in background - don't wait for it
+        (async () => {
+          try {
+            console.log(`🔄 Creator detected - updating group keys for all members...`);
+            for (const member of groupMembers) {
+              const memberId = member.id || member._id || member;
+              // Skip re-encrypting for the creator themselves (they already have the key)
+              if (memberId.toString() === currentUserId.toString()) {
+                continue;
+              }
+              try {
+                await reEncryptGroupKeyForMember(groupId, memberId, currentUserId, groupCreatorId);
+              } catch (reEncryptError) {
+                // Log but don't fail - some members might not have keys set up yet
+                console.log(`⚠️ Could not update key for member ${memberId}:`, reEncryptError.message);
+              }
+            }
+            console.log(`✅ Group keys updated for all members`);
+          } catch (backgroundError) {
+            // Don't throw - this is background maintenance
+            console.log(`⚠️ Background key update failed:`, backgroundError.message);
+          }
+        })();
+      }
+      
       return groupKey;
     } catch (error) {
+      // Check if this is a key mismatch error (decryption failed due to key change)
+      const isKeyMismatch = error.message?.includes('key mismatch') || 
+                           error.message?.includes('Failed to decrypt') ||
+                           error.name === 'OperationError';
+      
+      // If key mismatch and user is creator, try to re-encrypt for all members
+      if (isKeyMismatch && groupMembers && currentUserId.toString() === (groupCreatorId?.toString() || groupCreatorId)) {
+        console.warn(`⚠️ Key mismatch detected. Creator will re-encrypt group key for all members...`);
+        
+        try {
+          // Get group key from another member or regenerate
+          let recoveredGroupKey = null;
+          
+          // Try to get group key from cache (if creator already has it)
+          recoveredGroupKey = cryptoService.getGroupKey(groupId);
+          
+          // If not in cache, try to get it from another member
+          if (!recoveredGroupKey && groupMembers.length > 1) {
+            for (const member of groupMembers) {
+              const memberId = member.id || member._id || member;
+              if (memberId.toString() === currentUserId.toString()) continue;
+              
+              try {
+                const memberKeyData = await getGroupKey(groupId, memberId);
+                const memberEncryptorId = memberKeyData.encryptedBy || groupCreatorId;
+                const memberEncryptorPublicKey = await fetchUserPublicKey(memberEncryptorId);
+                recoveredGroupKey = await cryptoService.decryptGroupKey(
+                  memberKeyData,
+                  memberEncryptorPublicKey,
+                  memberEncryptorId,
+                  groupId
+                );
+                console.log(`✅ Recovered group key from member ${memberId}`);
+                break;
+              } catch (e) {
+                continue;
+              }
+            }
+          }
+          
+          // If still no key, regenerate (only if creator)
+          if (!recoveredGroupKey) {
+            console.log(`🔄 Regenerating group key...`);
+            recoveredGroupKey = await cryptoService.generateGroupKey();
+            cryptoService.setGroupKey(groupId, recoveredGroupKey);
+          }
+          
+          // Re-encrypt for all members with their current public keys
+          console.log(`🔐 Re-encrypting group key for all members...`);
+          for (const member of groupMembers) {
+            const memberId = member.id || member._id || member;
+            try {
+              await reEncryptGroupKeyForMember(groupId, memberId, currentUserId, groupCreatorId);
+            } catch (reEncryptError) {
+              console.error(`⚠️ Failed to re-encrypt for member ${memberId}:`, reEncryptError.message);
+            }
+          }
+          
+          // Now try to fetch and decrypt again
+          const newEncryptedKeyData = await getGroupKey(groupId, currentUserId);
+          const newEncryptorId = newEncryptedKeyData.encryptedBy || groupCreatorId;
+          const newEncryptorPublicKey = await fetchUserPublicKey(newEncryptorId);
+          groupKey = await cryptoService.decryptGroupKey(
+            newEncryptedKeyData,
+            newEncryptorPublicKey,
+            newEncryptorId,
+            groupId
+          );
+          
+          console.log(`✅ Group key re-encrypted and decrypted successfully`);
+          return groupKey;
+        } catch (recoverError) {
+          console.error(`❌ Failed to recover from key mismatch:`, recoverError);
+        }
+      }
+      
       // If key not found (404), try to repair encryption
       if (error.response?.status === 404 && groupMembers) {
         console.warn(`⚠️ Group key not found, attempting to repair encryption...`);

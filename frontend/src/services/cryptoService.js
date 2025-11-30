@@ -453,13 +453,14 @@ class CryptoService {
       }
 
       // Import the raw group key as an AES-GCM key
+      // IMPORTANT: Set extractable to true so we can export it later for re-encryption
       const groupKey = await window.crypto.subtle.importKey(
         'raw',
         groupKeyRaw,
         {
           name: 'AES-GCM',
         },
-        false,
+        true, // extractable - needed for re-encrypting group key for members
         ['encrypt', 'decrypt']
       );
 
@@ -557,6 +558,12 @@ class CryptoService {
     // Add padding if needed
     while (cleaned.length % 4) {
       cleaned += '=';
+    }
+    
+    // Validate base64 characters before attempting to decode
+    const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
+    if (!base64Regex.test(cleaned)) {
+      throw new Error(`Invalid base64 characters in string. First 50 chars: ${cleaned.substring(0, 50)}`);
     }
     
     try {
