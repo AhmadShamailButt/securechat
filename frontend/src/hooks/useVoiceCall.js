@@ -44,7 +44,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
   const [isEncrypted, setIsEncrypted] = useState(false);
   
   // Crypto context for encryption
-  const { encryptMessage, decryptMessage, isInitialized: isCryptoInitialized, getUserPublicKey, clearSharedKeyCache } = useCrypto();
+  const { encryptMessage, decryptMessage, isInitialized: isCryptoInitialized, getUserPublicKey } = useCrypto();
 
   // WebRTC state machine
   const [webrtcState, setWebrtcState] = useState('idle');
@@ -1487,25 +1487,28 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
     const handleReconnect = () => {
       console.log('[WEBRTC] Socket reconnected during voice call');
       
-      // If there's an active call during reconnection, clear key cache and refresh keys
+      // If there's an active call during reconnection, log the state but DON'T clear keys
+      // Keys are still valid - reconnection is just a network event, not a cryptographic event
       if (callId && (webrtcState !== 'idle' && webrtcState !== 'ended')) {
-        console.warn('[WEBRTC] Active call detected during reconnection:', {
+        console.log('[WEBRTC] Active call detected during reconnection:', {
           callId,
           state: webrtcState,
           isInitiator,
           receiverId,
-          callerId
+          callerId,
+          message: 'Keys remain valid - no cache clearing needed'
         });
         
-        // Clear shared key cache for the other participant to force key refresh
-        const otherUserId = isInitiator ? receiverId : callerId;
-        if (otherUserId) {
-          console.log(`[WEBRTC] Clearing shared key cache for user: ${otherUserId}`);
-          clearSharedKeyCache(otherUserId);
-        }
+        // Note: Keys should NOT be cleared on reconnection because:
+        // 1. Keys are derived from public keys which don't change
+        // 2. Clearing cache causes key mismatch between caller/receiver
+        // 3. The retry logic in cryptoService.js already handles actual key mismatches
+        // 4. Reconnection is a network event, not a cryptographic event
         
-        // Note: Room rejoining is handled by ChatPage's reconnection handler
-        // Keys will be re-derived on next encrypt/decrypt operation
+        // Room rejoining is handled by ChatPage's reconnection handler
+        // Encryption keys remain cached and will be reused automatically
+      } else {
+        console.log('[WEBRTC] Reconnection detected but no active call - state:', webrtcState);
       }
     };
 
@@ -1522,7 +1525,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       socket.off('connect', handleReconnect);
       socket.off('reconnect', handleReconnect);
     };
-  }, [socket, callId, answerCall, handleAnswer, handleIceCandidate, isInitiator, webrtcState, receiverId, callerId, clearSharedKeyCache]);
+  }, [socket, callId, answerCall, handleAnswer, handleIceCandidate, isInitiator, webrtcState, receiverId, callerId]);
 
   // Cleanup on unmount only (not on re-render)
   useEffect(() => {
