@@ -77,6 +77,16 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
   const offerTimeoutRef = useRef(null);
   const answerTimeoutRef = useRef(null);
   const connectionTimeoutRef = useRef(null);
+  const disconnectGraceTimeoutRef = useRef(null); // Grace period timeout for disconnected state
+
+  // Signaling queue for reconnection (Fix: prevent unauthorized signaling on reconnection)
+  const signalingQueueRef = useRef([]);
+  const isReconnectingRef = useRef(false);
+
+  // RTT smoothing and quality stability (Fix: prevent frequent bitrate switching)
+  const rttHistoryRef = useRef([]); // Track RTT measurements for EMA
+  const smoothedRttRef = useRef(0); // Smoothed RTT value
+  const qualityHistoryRef = useRef([]); // Track quality levels for stability window
 
   // Create audio element for remote stream with enhanced audio processing
   useEffect(() => {
@@ -229,6 +239,47 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       }
     };
   }, [localStream]);
+
+  // Helper function to queue signaling messages during disconnection
+  const queueSignalingMessage = useCallback((eventType, payload) => {
+    if (!socket || !socket.connected) {
+      console.log(`[SIGNALING] Queueing ${eventType} message (socket disconnected)`);
+      signalingQueueRef.current.push({ eventType, payload, timestamp: Date.now() });
+      isReconnectingRef.current = true;
+      return true; // Message queued
+    }
+    return false; // Socket connected, don't queue
+  }, [socket]);
+
+  // Helper function to flush signaling queue after reconnection
+  const flushSignalingQueue = useCallback(async () => {
+    if (signalingQueueRef.current.length === 0) {
+      return;
+    }
+
+    if (!socket || !socket.connected) {
+      console.log('[SIGNALING] Cannot flush queue - socket not connected');
+      return;
+    }
+
+    // Wait a bit for userOnline to be processed on server
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    console.log(`[SIGNALING] Flushing ${signalingQueueRef.current.length} queued messages`);
+    const queue = [...signalingQueueRef.current];
+    signalingQueueRef.current = [];
+    isReconnectingRef.current = false;
+
+    // Send all queued messages
+    for (const { eventType, payload } of queue) {
+      try {
+        socket.emit(eventType, payload);
+        console.log(`[SIGNALING] Sent queued ${eventType} message`);
+      } catch (err) {
+        console.error(`[SIGNALING] Failed to send queued ${eventType} message:`, err);
+      }
+    }
+  }, [socket]);
 
   // Helper function to encrypt signaling data
   const encryptSignalingData = useCallback(async (data, recipientId) => {
@@ -449,24 +500,29 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
           usernameFragment: event.candidate.usernameFragment
         };
         
-        // Only encrypt if encryption is enabled
+        // Prepare payload
+        let payload;
         if (encryptionEnabledRef.current) {
           const encryptedPayload = await encryptSignalingData(candidateData, receiverId);
-          socket.emit('voice-call:ice-candidate', {
+          payload = {
             ...encryptedPayload,
             callId,
             from: callerId,
             to: receiverId
-          });
+          };
         } else {
-          // Send unencrypted
-          socket.emit('voice-call:ice-candidate', {
+          payload = {
             candidate: candidateData,
             callId,
             from: callerId,
             to: receiverId,
             encrypted: false
-          });
+          };
+        }
+
+        // Queue if socket is disconnected, otherwise send immediately
+        if (!queueSignalingMessage('voice-call:ice-candidate', payload)) {
+          socket.emit('voice-call:ice-candidate', payload);
         }
       } catch (err) {
         console.error('[WEBRTC] Failed to encrypt ICE candidate:', err);
@@ -477,13 +533,18 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
           sdpMLineIndex: event.candidate.sdpMLineIndex,
           usernameFragment: event.candidate.usernameFragment
         };
-        socket.emit('voice-call:ice-candidate', {
+        const payload = {
           candidate: candidateData,
           callId,
           from: callerId,
           to: receiverId,
           encrypted: false
-        });
+        };
+        
+        // Queue if socket is disconnected, otherwise send immediately
+        if (!queueSignalingMessage('voice-call:ice-candidate', payload)) {
+          socket.emit('voice-call:ice-candidate', payload);
+        }
       }
     };
 
@@ -529,14 +590,37 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
             clearTimeout(connectionTimeoutRef.current);
             connectionTimeoutRef.current = null;
           }
+          // Clear disconnect grace period timeout if connection recovered
+          if (disconnectGraceTimeoutRef.current) {
+            clearTimeout(disconnectGraceTimeoutRef.current);
+            disconnectGraceTimeoutRef.current = null;
+            console.log('[WEBRTC] Connection recovered, cleared disconnect grace period');
+          }
           break;
         case 'disconnected':
           console.warn('[WEBRTC] ICE connection disconnected, may reconnect...');
+          // Clear any existing grace period timeout
+          if (disconnectGraceTimeoutRef.current) {
+            clearTimeout(disconnectGraceTimeoutRef.current);
+            disconnectGraceTimeoutRef.current = null;
+          }
           // Add grace period before showing error (3 seconds)
-          setTimeout(() => {
-            if (pc.iceConnectionState === 'disconnected') {
+          // Only show error if still disconnected after grace period
+          disconnectGraceTimeoutRef.current = setTimeout(() => {
+            // Check actual connection state before showing error
+            if (pc.iceConnectionState === 'disconnected' && 
+                pc.connectionState !== 'connected' && 
+                pc.connectionState !== 'connecting') {
               setError('Connection interrupted, attempting to reconnect...');
+              // Attempt ICE restart to recover connection
+              try {
+                pc.restartIce();
+                console.log('[WEBRTC] Attempting ICE restart after disconnect');
+              } catch (restartErr) {
+                console.warn('[WEBRTC] Failed to restart ICE:', restartErr);
+              }
             }
+            disconnectGraceTimeoutRef.current = null;
           }, 3000);
           break;
         case 'failed':
@@ -586,7 +670,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
 
     peerConnectionRef.current = pc;
     return pc;
-  }, [socket, callId, isInitiator, receiverId, callerId]);
+  }, [socket, callId, isInitiator, receiverId, callerId, queueSignalingMessage, encryptSignalingData]);
 
   // Get local media stream with optimized audio constraints
   const getLocalStream = useCallback(async () => {
@@ -782,18 +866,23 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
         };
         const encryptedPayload = await encryptSignalingData(offerData, receiverId);
         
-        socket.emit('voice-call:offer', {
+        const payload = {
           ...encryptedPayload,
           callId,
           from: callerId,
           to: receiverId
-        });
+        };
         
-        console.log('[WEBRTC-CALLER] Encrypted offer sent to:', receiverId);
+        // Queue if socket is disconnected, otherwise send immediately
+        if (!queueSignalingMessage('voice-call:offer', payload)) {
+          socket.emit('voice-call:offer', payload);
+        }
+        
+        console.log('[WEBRTC-CALLER] Encrypted offer sent/queued to:', receiverId);
       } catch (encryptErr) {
         console.error('[ENCRYPTION] Failed to encrypt offer, sending unencrypted:', encryptErr);
         // Fallback to unencrypted - serialize offer
-        socket.emit('voice-call:offer', {
+        const payload = {
           offer: {
             type: offer.type,
             sdp: offer.sdp
@@ -802,7 +891,12 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
           from: callerId,
           to: receiverId,
           encrypted: false
-        });
+        };
+        
+        // Queue if socket is disconnected, otherwise send immediately
+        if (!queueSignalingMessage('voice-call:offer', payload)) {
+          socket.emit('voice-call:offer', payload);
+        }
         setIsEncrypted(false);
         toast.error('Encryption failed. Call proceeding without encryption.');
       }
@@ -825,7 +919,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       setWebrtcState('failed');
       setError(err.message);
     }
-  }, [getLocalStream, initializePeerConnection, socket, callId, callerId, receiverId, isCryptoInitialized, getUserPublicKey, encryptSignalingData, configureOpusCodec]);
+  }, [getLocalStream, initializePeerConnection, socket, callId, callerId, receiverId, isCryptoInitialized, getUserPublicKey, encryptSignalingData, configureOpusCodec, queueSignalingMessage]);
 
   // Answer call (as receiver)
   const answerCall = useCallback(async (encryptedOfferPayload = null) => {
@@ -1171,18 +1265,23 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
         };
         const encryptedPayload = await encryptSignalingData(answerData, receiverId);
         
-        socket.emit('voice-call:answer', {
+        const payload = {
           ...encryptedPayload,
           callId,
           from: callerId,
           to: receiverId
-        });
+        };
         
-        console.log('[WEBRTC-RECEIVER] Encrypted answer sent to:', callerId);
+        // Queue if socket is disconnected, otherwise send immediately
+        if (!queueSignalingMessage('voice-call:answer', payload)) {
+          socket.emit('voice-call:answer', payload);
+        }
+        
+        console.log('[WEBRTC-RECEIVER] Encrypted answer sent/queued to:', callerId);
       } catch (encryptErr) {
         console.error('[ENCRYPTION] Failed to encrypt answer, sending unencrypted:', encryptErr);
         // Fallback to unencrypted - serialize answer
-        socket.emit('voice-call:answer', {
+        const payload = {
           answer: {
             type: answer.type,
             sdp: answer.sdp
@@ -1191,7 +1290,12 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
           from: callerId,
           to: receiverId,
           encrypted: false
-        });
+        };
+        
+        // Queue if socket is disconnected, otherwise send immediately
+        if (!queueSignalingMessage('voice-call:answer', payload)) {
+          socket.emit('voice-call:answer', payload);
+        }
         toast.error('Failed to encrypt answer. Call proceeding without encryption.');
       }
 
@@ -1207,7 +1311,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       setWebrtcState('failed');
       setError(err.message);
     }
-  }, [getLocalStream, initializePeerConnection, socket, callId, callerId, receiverId, webrtcState, decryptSignalingData, encryptSignalingData, isCryptoInitialized, getUserPublicKey, configureOpusCodec]);
+  }, [getLocalStream, initializePeerConnection, socket, callId, callerId, receiverId, webrtcState, decryptSignalingData, encryptSignalingData, isCryptoInitialized, getUserPublicKey, configureOpusCodec, queueSignalingMessage]);
 
   // Handle received answer
   const handleAnswer = useCallback(async (encryptedAnswerPayload) => {
@@ -1435,6 +1539,10 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       clearTimeout(connectionTimeoutRef.current);
       connectionTimeoutRef.current = null;
     }
+    if (disconnectGraceTimeoutRef.current) {
+      clearTimeout(disconnectGraceTimeoutRef.current);
+      disconnectGraceTimeoutRef.current = null;
+    }
 
     // Stop all local tracks
     if (localStream) {
@@ -1460,6 +1568,11 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
     shouldAnswerRef.current = false;
     rtpSenderRef.current = null; // Clear RTCRtpSender ref
     currentBitrateRef.current = 64000; // Reset to default bitrate
+    signalingQueueRef.current = []; // Clear signaling queue
+    isReconnectingRef.current = false;
+    rttHistoryRef.current = []; // Clear RTT history
+    smoothedRttRef.current = 0; // Reset smoothed RTT
+    qualityHistoryRef.current = []; // Clear quality history
   }, [localStream]);
 
   // Socket event listeners
@@ -1514,7 +1627,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       }
     };
 
-    const handleReconnect = () => {
+    const handleReconnect = async () => {
       console.log('[WEBRTC] Socket reconnected during voice call');
       
       // If there's an active call during reconnection, log the state but DON'T clear keys
@@ -1537,8 +1650,13 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
         
         // Room rejoining is handled by ChatPage's reconnection handler
         // Encryption keys remain cached and will be reused automatically
+        
+        // Flush queued signaling messages after reconnection
+        await flushSignalingQueue();
       } else {
         console.log('[WEBRTC] Reconnection detected but no active call - state:', webrtcState);
+        // Still flush queue in case there are any pending messages
+        await flushSignalingQueue();
       }
     };
 
@@ -1555,7 +1673,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       socket.off('connect', handleReconnect);
       socket.off('reconnect', handleReconnect);
     };
-  }, [socket, callId, answerCall, handleAnswer, handleIceCandidate, isInitiator, webrtcState, receiverId, callerId]);
+  }, [socket, callId, answerCall, handleAnswer, handleIceCandidate, isInitiator, webrtcState, receiverId, callerId, flushSignalingQueue]);
 
   // Cleanup on unmount only (not on re-render)
   useEffect(() => {
@@ -1610,6 +1728,28 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
         ? parseFloat(packetLossPercent) 
         : packetLossPercent;
       
+      // RTT Smoothing: Use Exponential Moving Average (EMA) to reduce fluctuations
+      // Formula: smoothedRTT = α * currentRTT + (1-α) * previousSmoothedRTT where α = 0.3
+      const alpha = 0.3;
+      if (rtt > 0) {
+        if (smoothedRttRef.current === 0) {
+          // Initialize with first RTT value
+          smoothedRttRef.current = rtt;
+        } else {
+          // Apply EMA
+          smoothedRttRef.current = alpha * rtt + (1 - alpha) * smoothedRttRef.current;
+        }
+        
+        // Keep history for reference (max 5 values)
+        rttHistoryRef.current.push(rtt);
+        if (rttHistoryRef.current.length > 5) {
+          rttHistoryRef.current.shift();
+        }
+      }
+      
+      // Use smoothed RTT for quality assessment
+      const smoothedRtt = smoothedRttRef.current || rtt;
+      
       // Determine quality level and target bitrate
       // Only check bitrate if it's available (greater than 0)
       let quality = 'good';
@@ -1617,15 +1757,15 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       const hasBitrateInfo = availableBitrate && availableBitrate > 0;
       
       // Poor quality thresholds - reduce bitrate significantly
-      // Updated thresholds: packet loss > 5%, jitter > 20ms, RTT > 300ms
-      if (packetLoss > 5 || jitter > 0.02 || rtt > 0.3 || (hasBitrateInfo && availableBitrate < 32000)) {
+      // Updated thresholds: packet loss > 5%, jitter > 20ms, smoothed RTT > 300ms
+      if (packetLoss > 5 || jitter > 0.02 || smoothedRtt > 0.3 || (hasBitrateInfo && availableBitrate < 32000)) {
         quality = 'poor';
         // Reduce bitrate to 32 kbps for poor connections (better packet loss resilience)
         targetBitrate = 32000;
       } 
       // Fair quality thresholds - reduce bitrate moderately
-      // Updated thresholds: packet loss > 2%, jitter > 10ms, RTT > 150ms
-      else if (packetLoss > 2 || jitter > 0.01 || rtt > 0.15 || (hasBitrateInfo && availableBitrate < 48000)) {
+      // Updated thresholds: packet loss > 2%, jitter > 10ms, smoothed RTT > 180ms (increased from 150ms)
+      else if (packetLoss > 2 || jitter > 0.01 || smoothedRtt > 0.18 || (hasBitrateInfo && availableBitrate < 48000)) {
         quality = 'fair';
         // Reduce bitrate to 48 kbps for fair connections
         targetBitrate = 48000;
@@ -1636,10 +1776,22 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
         targetBitrate = 64000; // 64 kbps for good connections
       }
       
-      // Adjust bitrate if it has changed significantly (hysteresis: 16kbps threshold to prevent constant switching)
+      // Stability Window: Track quality history and only change if quality persists for 2 consecutive checks
+      qualityHistoryRef.current.push(quality);
+      if (qualityHistoryRef.current.length > 2) {
+        qualityHistoryRef.current.shift();
+      }
+      
+      // Only adjust bitrate if:
+      // 1. Quality has been consistent for 2 checks (stability window)
+      // 2. Bitrate difference is >= 24kbps (increased hysteresis from 16kbps)
+      const qualityStable = qualityHistoryRef.current.length === 2 && 
+                            qualityHistoryRef.current[0] === qualityHistoryRef.current[1];
       const bitrateDifference = Math.abs(currentBitrateRef.current - targetBitrate);
-      if (bitrateDifference >= 16000) {
+      
+      if (qualityStable && bitrateDifference >= 24000) {
         await adjustAudioBitrate(targetBitrate);
+        console.log(`[WEBRTC] Bitrate adjusted: ${currentBitrateRef.current/1000}kbps -> ${targetBitrate/1000}kbps (quality: ${quality}, smoothed RTT: ${(smoothedRtt*1000).toFixed(0)}ms)`);
       }
       
       setConnectionQuality(quality);
@@ -1727,11 +1879,15 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
           quality: 'good' // Default quality
         };
 
-        // FIX: Calculate quality first before using it
-        const calculatedQuality = enhancedStats.packetLossPercent > 5 || enhancedStats.rtt > 0.3 ? 'poor' 
-          : enhancedStats.packetLossPercent > 2 || enhancedStats.rtt > 0.15 ? 'fair' : 'good';
+        // FIX: Calculate quality first before using it (using smoothed RTT if available)
+        const rttForQuality = smoothedRttRef.current > 0 ? smoothedRttRef.current : enhancedStats.rtt;
+        const calculatedQuality = enhancedStats.packetLossPercent > 5 || rttForQuality > 0.3 ? 'poor' 
+          : enhancedStats.packetLossPercent > 2 || rttForQuality > 0.18 ? 'fair' : 'good';
         
         enhancedStats.quality = calculatedQuality;
+        // Add smoothed RTT to stats for display
+        enhancedStats.smoothedRtt = smoothedRttRef.current;
+        enhancedStats.smoothedRttMs = smoothedRttRef.current * 1000;
 
         // Adjust quality based on stats (async - adjusts bitrate dynamically)
         adjustQualityBasedOnStats(enhancedStats).then(adjustedQuality => {
