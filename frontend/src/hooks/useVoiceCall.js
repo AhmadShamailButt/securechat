@@ -393,6 +393,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
         // Add/update Opus parameters for optimal voice quality with packet loss resilience
         const newParams = [
           'minptime=10', // Minimum packet time (10ms for low latency)
+          'maxptime=60', // Maximum packet time (60ms to prevent buffering issues)
           'useinbandfec=1', // Enable in-band FEC for error recovery (critical for packet loss)
           'stereo=0', // Mono (sufficient for voice, reduces bandwidth)
           'sprop-stereo=0', // No stereo property
@@ -523,10 +524,20 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
         case 'completed':
           console.log('[WEBRTC] ICE connection established');
           setError(null);
+          // Clear connection timeout on successful connection
+          if (connectionTimeoutRef.current) {
+            clearTimeout(connectionTimeoutRef.current);
+            connectionTimeoutRef.current = null;
+          }
           break;
         case 'disconnected':
           console.warn('[WEBRTC] ICE connection disconnected, may reconnect...');
-          setError('Connection interrupted, attempting to reconnect...');
+          // Add grace period before showing error (3 seconds)
+          setTimeout(() => {
+            if (pc.iceConnectionState === 'disconnected') {
+              setError('Connection interrupted, attempting to reconnect...');
+            }
+          }, 3000);
           break;
         case 'failed':
           console.error('[WEBRTC] ICE connection failed permanently');
@@ -1292,10 +1303,15 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
           pendingCandidatesRef.current = [];
         }
 
-        // Fix 4: Set connection timeout (15 seconds to establish connection)
-        // Fix 7: With retry logic
+        // Fix 4: Set connection timeout (30 seconds to establish connection)
+        // FIX: Increase timeout and only set if not already connected
         connectionTimeoutRef.current = setTimeout(() => {
-          if (webrtcState !== 'connected') {
+          // Check both webrtcState and actual connection state
+          const isActuallyConnected = pc.connectionState === 'connected' || 
+                                     pc.iceConnectionState === 'connected' || 
+                                     pc.iceConnectionState === 'completed';
+          
+          if (!isActuallyConnected && webrtcState !== 'connected') {
             if (retryCount < MAX_RETRIES) {
               console.log(`[WEBRTC-CALLER] Connection timeout, retrying (${retryCount + 1}/${MAX_RETRIES})`);
               setRetryCount(prev => prev + 1);
@@ -1307,7 +1323,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
               setError('Connection failed after multiple attempts. Please try again.');
             }
           }
-        }, 15000);
+        }, 30000);
       }
     } catch (err) {
       console.error('[WEBRTC-CALLER] Error handling answer:', err);
@@ -1601,15 +1617,15 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       const hasBitrateInfo = availableBitrate && availableBitrate > 0;
       
       // Poor quality thresholds - reduce bitrate significantly
-      // More aggressive thresholds: packet loss > 3%, jitter > 20ms, RTT > 150ms
-      if (packetLoss > 3 || jitter > 0.02 || rtt > 0.15 || (hasBitrateInfo && availableBitrate < 32000)) {
+      // Updated thresholds: packet loss > 5%, jitter > 20ms, RTT > 300ms
+      if (packetLoss > 5 || jitter > 0.02 || rtt > 0.3 || (hasBitrateInfo && availableBitrate < 32000)) {
         quality = 'poor';
         // Reduce bitrate to 32 kbps for poor connections (better packet loss resilience)
         targetBitrate = 32000;
       } 
       // Fair quality thresholds - reduce bitrate moderately
-      // Moderate thresholds: packet loss > 1.5%, jitter > 10ms, RTT > 100ms
-      else if (packetLoss > 1.5 || jitter > 0.01 || rtt > 0.1 || (hasBitrateInfo && availableBitrate < 48000)) {
+      // Updated thresholds: packet loss > 2%, jitter > 10ms, RTT > 150ms
+      else if (packetLoss > 2 || jitter > 0.01 || rtt > 0.15 || (hasBitrateInfo && availableBitrate < 48000)) {
         quality = 'fair';
         // Reduce bitrate to 48 kbps for fair connections
         targetBitrate = 48000;
@@ -1620,8 +1636,9 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
         targetBitrate = 64000; // 64 kbps for good connections
       }
       
-      // Adjust bitrate if it has changed
-      if (currentBitrateRef.current !== targetBitrate) {
+      // Adjust bitrate if it has changed significantly (hysteresis: 16kbps threshold to prevent constant switching)
+      const bitrateDifference = Math.abs(currentBitrateRef.current - targetBitrate);
+      if (bitrateDifference >= 16000) {
         await adjustAudioBitrate(targetBitrate);
       }
       
@@ -1693,54 +1710,47 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
         // Calculate packet loss percentage
         const packetLossPercent = totalPackets > 0 ? (totalPacketsLost / totalPackets) * 100 : 0;
         
-        // Enhanced stats object
-        // Note: jitter and rtt are kept in seconds for quality assessment (will be converted to ms for display)
+        // Enhanced stats object - FIX: Define quality variable properly
         const enhancedStats = {
           packetLoss: totalPacketsLost,
-          packetLossPercent: packetLossPercent, // Keep as number for comparison
-          packetLossPercentFormatted: packetLossPercent.toFixed(2), // For display
-          jitter: jitter, // Keep in seconds for comparison
-          jitterMs: jitter * 1000, // Convert to ms for display
-          rtt: rtt, // Keep in seconds for comparison
-          rttMs: rtt * 1000, // Convert to ms for display
+          packetLossPercent: packetLossPercent,
+          packetLossPercentFormatted: packetLossPercent.toFixed(2),
+          jitter: jitter,
+          jitterMs: jitter * 1000,
+          rtt: rtt,
+          rttMs: rtt * 1000,
           availableBitrate: availableBitrate,
           bytesReceived,
           bytesSent,
           packetsReceived,
           packetsSent,
-          quality: 'good' // Will be set by adjustQualityBasedOnStats
+          quality: 'good' // Default quality
         };
 
+        // FIX: Calculate quality first before using it
+        const calculatedQuality = enhancedStats.packetLossPercent > 5 || enhancedStats.rtt > 0.3 ? 'poor' 
+          : enhancedStats.packetLossPercent > 2 || enhancedStats.rtt > 0.15 ? 'fair' : 'good';
+        
+        enhancedStats.quality = calculatedQuality;
+
         // Adjust quality based on stats (async - adjusts bitrate dynamically)
-        adjustQualityBasedOnStats(enhancedStats).then(quality => {
-          enhancedStats.quality = quality;
-          // Update stats with new quality
-          setConnectionStats({ ...enhancedStats, quality });
+        adjustQualityBasedOnStats(enhancedStats).then(adjustedQuality => {
+          enhancedStats.quality = adjustedQuality;
+          setConnectionStats({ ...enhancedStats, quality: adjustedQuality });
         }).catch(err => {
           console.error('[WEBRTC] Error adjusting quality:', err);
-          // Set quality based on metrics if async call fails (matching thresholds from adjustQualityBasedOnStats)
-          const estimatedQuality = enhancedStats.packetLossPercent > 3 || enhancedStats.rtt > 0.15 ? 'poor' 
-            : enhancedStats.packetLossPercent > 1.5 || enhancedStats.rtt > 0.1 ? 'fair' : 'good';
-          enhancedStats.quality = estimatedQuality;
+          setConnectionStats(enhancedStats);
         });
-        
-        // Set quality immediately for display (will be updated by async function)
-        // Use same thresholds as adjustQualityBasedOnStats for consistency
-        const estimatedQuality = enhancedStats.packetLossPercent > 3 || enhancedStats.rtt > 0.15 ? 'poor' 
-          : enhancedStats.packetLossPercent > 1.5 || enhancedStats.rtt > 0.1 ? 'fair' : 'good';
-        enhancedStats.quality = estimatedQuality;
 
-        setConnectionStats(enhancedStats);
-
-        // Log warnings for poor quality
-        if (quality === 'poor') {
+        // Log warnings for poor quality using the calculated quality
+        if (calculatedQuality === 'poor') {
           console.warn('[WEBRTC] Poor connection quality detected:', {
             packetLoss: enhancedStats.packetLossPercentFormatted + '%',
             jitter: enhancedStats.jitterMs.toFixed(2) + 'ms',
             rtt: enhancedStats.rttMs.toFixed(2) + 'ms',
             bitrate: enhancedStats.availableBitrate ? (enhancedStats.availableBitrate / 1000).toFixed(0) + 'kbps' : 'unknown'
           });
-        } else if (quality === 'fair') {
+        } else if (calculatedQuality === 'fair') {
           console.log('[WEBRTC] Fair connection quality:', {
             packetLoss: enhancedStats.packetLossPercentFormatted + '%',
             rtt: enhancedStats.rttMs.toFixed(2) + 'ms'
@@ -1749,7 +1759,7 @@ const useVoiceCall = (socket, callId, isInitiator, receiverId, callerId) => {
       } catch (err) {
         console.error('[WEBRTC] Error getting stats:', err);
       }
-    }, 2000); // Check every 2 seconds for more responsive quality adjustments
+    }, 3000); // FIX: Reduce frequency to 3 seconds to avoid excessive adjustments
 
     return () => clearInterval(interval);
   }, [webrtcState, localStream]);
