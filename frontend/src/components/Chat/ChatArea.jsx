@@ -42,7 +42,7 @@ export default function ChatArea({
   return (
     <div className="flex-1 flex flex-col">
       {/* Chat header */}
-      <ChatHeader activeContact={activeContact} />
+      <ChatHeader activeContact={activeContact} isGroupChat={isGroupChat} />
 
       {/* Message list */}
       <div className="flex-1 p-4 overflow-y-auto bg-background" style={{ overflowX: 'visible' }}>
