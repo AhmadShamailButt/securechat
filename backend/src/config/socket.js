@@ -720,4 +720,3 @@ exports.getUserSocketCount = (userId) => {
   const userSocketSet = userSockets.get(userId.toString());
   return userSocketSet ? userSocketSet.size : 0;
 };
-
