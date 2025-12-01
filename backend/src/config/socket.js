@@ -5,6 +5,10 @@ const mongoose = require("mongoose");
 const { isConnected } = require("./database");
 let io;
 
+// Track active socket connections per user
+// Map<userId, Set<socketId>>
+const userSockets = new Map();
+
 exports.init = (server, corsOptions) => {
   io = socketIo(server, { 
     cors: corsOptions || { origin: "*", methods: ["GET", "POST"], credentials: true },
@@ -12,6 +16,19 @@ exports.init = (server, corsOptions) => {
     pingTimeout: 30000,
     pingInterval: 10000
   });
+
+  // On server start, mark all users as offline
+  // Socket connections will update status as users connect
+  (async () => {
+    try {
+      if (isConnected() || mongoose.connection.readyState === 1) {
+        await User.updateMany({}, { isOnline: false });
+        console.log("Server started: All users marked offline. Status will update as users connect.");
+      }
+    } catch (error) {
+      console.error("Error marking users offline on server start:", error);
+    }
+  })();
 
   io.on("connection", (socket) => {
     console.log("Client connected:", socket.id);
@@ -26,94 +43,215 @@ exports.init = (server, corsOptions) => {
       const userId = data.userId;
       if (!userId) return;
 
-      // Wait for MongoDB connection with retry
-      const updateUserStatus = async (retries = 5) => {
-        if (isConnected() || mongoose.connection.readyState === 1) {
-          try {
-            // Update user's online status
-            await User.findByIdAndUpdate(userId, {
-              isOnline: true,
-              lastSeen: new Date()
-            });
+      // Track this socket for the user
+      if (!userSockets.has(userId)) {
+        userSockets.set(userId, new Set());
+      }
+      const userSocketSet = userSockets.get(userId);
+      
+      // Check if this is the first socket connection for this user
+      const isFirstConnection = userSocketSet.size === 0;
+      
+      // Add this socket to the user's socket set
+      userSocketSet.add(socket.id);
+      socketUser = userId;
 
-            // Notify all other users that this user is now online
-            socket.broadcast.emit("userStatusChanged", {
-              userId: userId,
-              isOnline: true,
-              lastSeen: new Date()
-            });
+      // Only update database and notify if this is the first connection
+      if (isFirstConnection) {
+        // Wait for MongoDB connection with retry
+        const updateUserStatus = async (retries = 5) => {
+          if (isConnected() || mongoose.connection.readyState === 1) {
+            try {
+              // Update user's online status
+              await User.findByIdAndUpdate(userId, {
+                isOnline: true,
+                lastSeen: new Date()
+              });
 
-            console.log(`User ${userId} is now online`);
-          } catch (error) {
-            console.error("Error updating user online status:", error);
+              // Notify all other users that this user is now online
+              socket.broadcast.emit("userStatusChanged", {
+                userId: userId,
+                isOnline: true,
+                lastSeen: new Date()
+              });
+
+              console.log(`User ${userId} is now online (socket: ${socket.id}, total sockets: ${userSocketSet.size})`);
+            } catch (error) {
+              console.error("Error updating user online status:", error);
+            }
+          } else if (retries > 0) {
+            // Retry after 500ms if MongoDB is not connected yet
+            setTimeout(() => updateUserStatus(retries - 1), 500);
+          } else {
+            console.log("MongoDB not connected after retries, skipping user online status update");
           }
-        } else if (retries > 0) {
-          // Retry after 500ms if MongoDB is not connected yet
-          setTimeout(() => updateUserStatus(retries - 1), 500);
-        } else {
-          console.log("MongoDB not connected after retries, skipping user online status update");
-        }
-      };
+        };
 
-      updateUserStatus();
+        updateUserStatus();
+      } else {
+        console.log(`User ${userId} has additional socket connection (socket: ${socket.id}, total sockets: ${userSocketSet.size})`);
+      }
     });
 
     socket.on("join", (data) => {
       // Handle joining with user information
       const conversationId = data.conversationId || data;
       const userId = data.userId || null;
-      
+
       // Handle sample- prefix if still present in frontend
-      const roomId = conversationId.startsWith('sample-') 
-        ? conversationId.replace('sample-', '') 
+      const roomId = conversationId.startsWith('sample-')
+        ? conversationId.replace('sample-', '')
         : conversationId;
-        
+
       console.log(`Socket ${socket.id} joining room ${roomId}`);
-      
+
       // Store user identifier if provided
       if (userId) {
         socketUser = userId;
         console.log(`Socket ${socket.id} associated with user ${userId}`);
-        
+
         // Join user-specific room for receiving read receipts and status updates
         socket.join(userId.toString());
         console.log(`Socket ${socket.id} joined user room: ${userId}`);
         
-        // Mark user as online when they join (with retry if MongoDB not ready)
-        const updateStatusOnJoin = async (retries = 5) => {
-          if (isConnected() || mongoose.connection.readyState === 1) {
-            try {
-              await User.findByIdAndUpdate(userId, {
-                isOnline: true,
-                lastSeen: new Date()
-              });
-              
-              // Notify all other users
-              socket.broadcast.emit("userStatusChanged", {
-                userId: userId,
-                isOnline: true,
-                lastSeen: new Date()
-              });
-            } catch (err) {
-              console.error("Error updating user online status on join:", err);
-            }
-          } else if (retries > 0) {
-            // Retry after 500ms if MongoDB is not connected yet
-            setTimeout(() => updateStatusOnJoin(retries - 1), 500);
-          }
-        };
+        // Track this socket for the user
+        if (!userSockets.has(userId)) {
+          userSockets.set(userId, new Set());
+        }
+        const userSocketSet = userSockets.get(userId);
         
-        updateStatusOnJoin();
+        // Check if this is the first socket connection for this user
+        const isFirstConnection = userSocketSet.size === 0;
+        
+        // Add this socket to the user's socket set
+        userSocketSet.add(socket.id);
+        
+        // Only update database and notify if this is the first connection
+        if (isFirstConnection) {
+          // Mark user as online when they join (with retry if MongoDB not ready)
+          const updateStatusOnJoin = async (retries = 5) => {
+            if (isConnected() || mongoose.connection.readyState === 1) {
+              try {
+                await User.findByIdAndUpdate(userId, {
+                  isOnline: true,
+                  lastSeen: new Date()
+                });
+                
+                // Notify all other users
+                socket.broadcast.emit("userStatusChanged", {
+                  userId: userId,
+                  isOnline: true,
+                  lastSeen: new Date()
+                });
+                
+                console.log(`User ${userId} is now online (socket: ${socket.id}, total sockets: ${userSocketSet.size})`);
+              } catch (err) {
+                console.error("Error updating user online status on join:", err);
+              }
+            } else if (retries > 0) {
+              // Retry after 500ms if MongoDB is not connected yet
+              setTimeout(() => updateStatusOnJoin(retries - 1), 500);
+            }
+          };
+          
+          updateStatusOnJoin();
+        } else {
+          console.log(`User ${userId} has additional socket connection (socket: ${socket.id}, total sockets: ${userSocketSet.size})`);
+        }
       }
-      
+
       // Add to our tracking set
       joinedRooms.add(roomId);
-      
+
       // Join the socket room
       socket.join(roomId);
-      
+
       // Confirm join to client
       socket.emit('joined', { room: roomId });
+    });
+
+    // Group chat events
+    socket.on("joinGroup", (data) => {
+      const { groupId, userId } = data;
+
+      if (!groupId) {
+        console.error("joinGroup: missing groupId");
+        return;
+      }
+
+      const roomId = `group_${groupId}`;
+      console.log(`Socket ${socket.id} joining group room ${roomId}`);
+
+      // Store user identifier if provided
+      if (userId && !socketUser) {
+        socketUser = userId;
+      }
+
+      // Add to tracking set
+      joinedRooms.add(roomId);
+
+      // Join the group room
+      socket.join(roomId);
+
+      // Confirm join to client
+      socket.emit('joinedGroup', { groupId, room: roomId });
+      console.log(`Socket ${socket.id} successfully joined group ${groupId}`);
+    });
+
+    socket.on("leaveGroup", (data) => {
+      const { groupId } = data;
+
+      if (!groupId) {
+        console.error("leaveGroup: missing groupId");
+        return;
+      }
+
+      const roomId = `group_${groupId}`;
+      console.log(`Socket ${socket.id} leaving group room ${roomId}`);
+
+      // Remove from tracking set
+      joinedRooms.delete(roomId);
+
+      // Leave the group room
+      socket.leave(roomId);
+
+      // Confirm leave to client
+      socket.emit('leftGroup', { groupId, room: roomId });
+    });
+
+    socket.on("sendGroupMessage", (msg) => {
+      const { groupId, senderId } = msg;
+
+      if (!groupId) {
+        console.error("sendGroupMessage: missing groupId");
+        return;
+      }
+
+      const roomId = `group_${groupId}`;
+      console.log(`Broadcasting group message from ${socket.id} (user: ${senderId || 'unknown'}) to room ${roomId}`);
+
+      // Broadcast to all clients in the group room EXCEPT sender
+      socket.broadcast.to(roomId).emit("newGroupMessage", msg);
+    });
+
+    socket.on("groupMessagesRead", (readReceipt) => {
+      const { groupId, messageIds, readBy, readAt } = readReceipt;
+
+      if (!groupId) {
+        console.error("groupMessagesRead: missing groupId");
+        return;
+      }
+
+      const roomId = `group_${groupId}`;
+      console.log(`Broadcasting read receipt for group ${groupId} from user ${readBy}`);
+
+      // Broadcast to all clients in the group room
+      socket.broadcast.to(roomId).emit("groupMessagesRead", {
+        groupId,
+        messageIds,
+        readBy,
+        readAt
+      });
     });
 
     // Listen for sendMessage but DON'T emit back to sender
@@ -135,24 +273,40 @@ exports.init = (server, corsOptions) => {
     socket.on("disconnect", async () => {
       console.log("Client disconnected:", socket.id);
       
-      // Mark user as offline if we have their userId (only if MongoDB is connected)
-      if (socketUser && (isConnected() || mongoose.connection.readyState === 1)) {
-        try {
-          await User.findByIdAndUpdate(socketUser, {
-            isOnline: false,
-            lastSeen: new Date()
-          });
+      // Remove this socket from the user's socket set
+      if (socketUser) {
+        const userSocketSet = userSockets.get(socketUser);
+        if (userSocketSet) {
+          userSocketSet.delete(socket.id);
+          
+          // Check if this was the last socket connection for this user
+          const isLastConnection = userSocketSet.size === 0;
+          
+          // Only mark user offline if this was their last connection
+          if (isLastConnection && (isConnected() || mongoose.connection.readyState === 1)) {
+            try {
+              // Clean up the user's socket set
+              userSockets.delete(socketUser);
+              
+              await User.findByIdAndUpdate(socketUser, {
+                isOnline: false,
+                lastSeen: new Date()
+              });
 
-          // Notify all other users that this user is now offline
-          socket.broadcast.emit("userStatusChanged", {
-            userId: socketUser,
-            isOnline: false,
-            lastSeen: new Date()
-          });
+              // Notify all other users that this user is now offline
+              socket.broadcast.emit("userStatusChanged", {
+                userId: socketUser,
+                isOnline: false,
+                lastSeen: new Date()
+              });
 
-          console.log(`User ${socketUser} is now offline`);
-        } catch (error) {
-          console.error("Error updating user offline status:", error);
+              console.log(`User ${socketUser} is now offline (last socket disconnected)`);
+            } catch (error) {
+              console.error("Error updating user offline status:", error);
+            }
+          } else if (!isLastConnection) {
+            console.log(`User ${socketUser} still has ${userSocketSet.size} active socket(s)`);
+          }
         }
       }
       
@@ -386,8 +540,26 @@ exports.init = (server, corsOptions) => {
     socket.on("voice-call:offer", async (data) => {
       const { offer, callId, from, to } = data;
 
-      // Fix 5: Validate sender is authenticated and matches 'from' field
-      if (!socketUser || socketUser.toString() !== from.toString()) {
+      // Fix: Validate sender - use fallback validation if socketUser is null (reconnection race condition)
+      let isAuthorized = socketUser && socketUser.toString() === from.toString();
+      
+      // Fallback: If socketUser is null (reconnection race condition), validate via Call document
+      if (!isAuthorized) {
+        try {
+          const call = await Call.findById(callId);
+          if (call && (call.callerId.toString() === from.toString() || 
+                       call.receiverId.toString() === from.toString())) {
+            // User is a participant in the call - authorize and set socketUser
+            socketUser = from;
+            isAuthorized = true;
+            console.log('[SIGNALING] Fallback validation successful for offer (reconnection):', { callId, from });
+          }
+        } catch (err) {
+          console.error('[SIGNALING] Error in fallback validation:', err);
+        }
+      }
+
+      if (!isAuthorized) {
         console.error('[SIGNALING] Unauthorized offer attempt:', { socketUser, from });
         socket.emit('voice-call:error', { message: 'Unauthorized signaling attempt' });
         return;
@@ -410,13 +582,14 @@ exports.init = (server, corsOptions) => {
         }
 
         // Forward offer to receiver
-        io.to(to.toString()).emit("voice-call:offer", {
+        const payload = {
           offer,
           callId,
           from
-        });
+        };
 
-        console.log(`[SIGNALING] WebRTC offer forwarded from ${from} to ${to}`);
+        console.log(`[SIGNALING] Forwarding WebRTC offer from ${from} to ${to}`);
+        io.to(to.toString()).emit("voice-call:offer", payload);
       } catch (err) {
         console.error('[SIGNALING] Error validating call:', err);
         socket.emit('voice-call:error', { message: 'Failed to validate call' });
@@ -426,8 +599,26 @@ exports.init = (server, corsOptions) => {
     socket.on("voice-call:answer", async (data) => {
       const { answer, callId, from, to } = data;
 
-      // Fix 5: Validate sender is authenticated and matches 'from' field
-      if (!socketUser || socketUser.toString() !== from.toString()) {
+      // Fix: Validate sender - use fallback validation if socketUser is null (reconnection race condition)
+      let isAuthorized = socketUser && socketUser.toString() === from.toString();
+      
+      // Fallback: If socketUser is null (reconnection race condition), validate via Call document
+      if (!isAuthorized) {
+        try {
+          const call = await Call.findById(callId);
+          if (call && (call.callerId.toString() === from.toString() || 
+                       call.receiverId.toString() === from.toString())) {
+            // User is a participant in the call - authorize and set socketUser
+            socketUser = from;
+            isAuthorized = true;
+            console.log('[SIGNALING] Fallback validation successful for answer (reconnection):', { callId, from });
+          }
+        } catch (err) {
+          console.error('[SIGNALING] Error in fallback validation:', err);
+        }
+      }
+
+      if (!isAuthorized) {
         console.error('[SIGNALING] Unauthorized answer attempt:', { socketUser, from });
         socket.emit('voice-call:error', { message: 'Unauthorized signaling attempt' });
         return;
@@ -450,36 +641,57 @@ exports.init = (server, corsOptions) => {
         }
 
         // Forward answer to caller
-        io.to(to.toString()).emit("voice-call:answer", {
+        const payload = {
           answer,
           callId,
           from
-        });
+        };
 
-        console.log(`[SIGNALING] WebRTC answer forwarded from ${from} to ${to}`);
+        console.log(`[SIGNALING] Forwarding WebRTC answer from ${from} to ${to}`);
+        io.to(to.toString()).emit("voice-call:answer", payload);
       } catch (err) {
         console.error('[SIGNALING] Error validating call:', err);
         socket.emit('voice-call:error', { message: 'Failed to validate call' });
       }
     });
 
-    socket.on("voice-call:ice-candidate", (data) => {
+    socket.on("voice-call:ice-candidate", async (data) => {
       const { candidate, callId, from, to } = data;
 
-      // Fix 5: Validate sender is authenticated and matches 'from' field
-      // Note: We don't validate the call for ICE candidates as it's too expensive
-      // (many candidates are sent during connection setup)
-      if (!socketUser || socketUser.toString() !== from.toString()) {
-        console.error('[SIGNALING] Unauthorized ICE candidate attempt:', { socketUser, from });
-        return; // Silently drop - ICE candidates are not critical
+      // Fix: Validate sender - use fallback validation if socketUser is null (reconnection race condition)
+      // Note: We use async validation for ICE candidates to support fallback, but keep it lightweight
+      let isAuthorized = socketUser && socketUser.toString() === from.toString();
+      
+      // Fallback: If socketUser is null (reconnection race condition), validate via Call document
+      // Only do this for first few candidates to avoid performance impact
+      if (!isAuthorized && callId) {
+        try {
+          const call = await Call.findById(callId);
+          if (call && (call.callerId.toString() === from.toString() || 
+                       call.receiverId.toString() === from.toString())) {
+            // User is a participant in the call - authorize and set socketUser
+            socketUser = from;
+            isAuthorized = true;
+            console.log('[SIGNALING] Fallback validation successful for ICE candidate (reconnection):', { callId, from });
+          }
+        } catch (err) {
+          // Silently fail for ICE candidates - they're not critical
+        }
+      }
+
+      if (!isAuthorized) {
+        // Silently drop - ICE candidates are not critical and we don't want to spam errors
+        return;
       }
 
       // Forward ICE candidate to other party
-      io.to(to.toString()).emit("voice-call:ice-candidate", {
+      const payload = {
         candidate,
         callId,
         from
-      });
+      };
+
+      io.to(to.toString()).emit("voice-call:ice-candidate", payload);
     });
 
     socket.on("error", (err) => {
@@ -493,5 +705,19 @@ exports.init = (server, corsOptions) => {
 exports.getIO = () => {
   if (!io) throw new Error("Socket.io not initialized");
   return io;
+};
+
+// Helper function to check if a user has active socket connections
+exports.isUserOnline = (userId) => {
+  if (!userId) return false;
+  const userSocketSet = userSockets.get(userId.toString());
+  return userSocketSet && userSocketSet.size > 0;
+};
+
+// Helper function to get the count of active sockets for a user
+exports.getUserSocketCount = (userId) => {
+  if (!userId) return 0;
+  const userSocketSet = userSockets.get(userId.toString());
+  return userSocketSet ? userSocketSet.size : 0;
 };
 

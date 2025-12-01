@@ -1,7 +1,9 @@
+const dotenv = require("dotenv");
+dotenv.config();
+
 const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
-const dotenv = require("dotenv");
 const http = require("http");
 const connectDB = require("./src/config/database");
 const { init: initSocket } = require("./src/config/socket");
@@ -14,17 +16,16 @@ const groupRoutes = require("./src/routes/groupRoutes");
 // Added line 14:
 const userRoutes = require("./src/routes/userRoutes");
 const callRoutes = require("./src/routes/callRoutes");
-
-dotenv.config();
+const fileRoutes = require("./src/routes/fileRoutes");
 connectDB();
 
 const app = express();
 const server = http.createServer(app);
-
+console.log("Cors origin")
 // Allow multiple localhost ports for development
 const allowedOrigins = process.env.CORS_ORIGIN 
   ? process.env.CORS_ORIGIN.split(',')
-  : ["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"];
+  : ["http://localhost:5173", "http://localhost:5174", "http://localhost:3000","https://securechat-sigma.vercel.app"];
 
 const io = initSocket(server, {
   origin: allowedOrigins,
@@ -32,7 +33,7 @@ const io = initSocket(server, {
   credentials: true
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 8005;
 
 // Middleware
 app.use(cors({
@@ -62,6 +63,7 @@ app.use("/api/friends", friendRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/groups", groupRoutes);
 app.use("/api/calls", callRoutes);
+app.use("/api/files", fileRoutes);
 
 app.get("/", (req, res) => {
   res.send("SecureChat API is running");
