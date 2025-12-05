@@ -47,7 +47,7 @@ const FileMessage = ({ message, isOwn, sharedSecret }) => {
     try {
       // Step 1: Get download URL from backend
       setDownloadProgress(20);
-      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const apiUrl = import.meta.env.VITE_API_URL || 'https://apisecurechat.duckdns.org';
       const response = await fetch(`${apiUrl}/api/files/download/${message.fileId}`, {
         headers: {
           'Authorization': `Bearer ${token}`
