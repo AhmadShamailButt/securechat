@@ -87,7 +87,6 @@ export default function ChatPage() {
     answerCall: answerWebRTCCall,
     endCall: endWebRTCCall,
     toggleMute: toggleWebRTCMute,
-    isEncrypted: isCallEncrypted,
     connectionQuality,
     connectionStats,
   } = useVoiceCall(
@@ -919,7 +918,6 @@ export default function ChatPage() {
         duration={activeCall?.duration || 0}
         isMuted={activeCall?.isMuted || false}
         isSpeakerOn={activeCall?.isSpeakerOn || false}
-        isEncrypted={isCallEncrypted || false}
         connectionQuality={connectionQuality || 'good'}
         connectionStats={connectionStats}
         onToggleMute={handleToggleMute}

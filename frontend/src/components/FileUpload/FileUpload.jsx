@@ -59,7 +59,7 @@ const FileUpload = ({ recipientId, conversationId, onUploadComplete, onCancel, c
       }
 
       // Request upload URL from backend
-      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const apiUrl = import.meta.env.VITE_API_URL || 'https://apisecurechat.duckdns.org';
       const uploadRequest = await fetch(`${apiUrl}/api/files/upload/request`, {
         method: 'POST',
         headers: {

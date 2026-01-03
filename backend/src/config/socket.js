@@ -538,7 +538,7 @@ exports.init = (server, corsOptions) => {
 
     // WebRTC Signaling Events
     socket.on("voice-call:offer", async (data) => {
-      const { offer, encryptedData, isEncrypted, encrypted, callId, from, to } = data;
+      const { offer, callId, from, to } = data;
 
       // Fix: Validate sender - use fallback validation if socketUser is null (reconnection race condition)
       let isAuthorized = socketUser && socketUser.toString() === from.toString();
@@ -581,26 +581,14 @@ exports.init = (server, corsOptions) => {
           return;
         }
 
-        // Forward offer to receiver (encrypted or unencrypted)
-        // Server acts as relay - does not decrypt
+        // Forward offer to receiver
         const payload = {
+          offer,
           callId,
           from
         };
 
-        // Check if payload is encrypted
-        if (isEncrypted || encrypted === true) {
-          // Encrypted payload
-          payload.encryptedData = encryptedData;
-          payload.isEncrypted = true;
-          console.log(`[SIGNALING] Forwarding encrypted WebRTC offer from ${from} to ${to}`);
-        } else {
-          // Unencrypted payload (backward compatibility)
-          payload.offer = offer;
-          payload.encrypted = false;
-          console.log(`[SIGNALING] Forwarding unencrypted WebRTC offer from ${from} to ${to}`);
-        }
-
+        console.log(`[SIGNALING] Forwarding WebRTC offer from ${from} to ${to}`);
         io.to(to.toString()).emit("voice-call:offer", payload);
       } catch (err) {
         console.error('[SIGNALING] Error validating call:', err);
@@ -609,7 +597,7 @@ exports.init = (server, corsOptions) => {
     });
 
     socket.on("voice-call:answer", async (data) => {
-      const { answer, encryptedData, isEncrypted, encrypted, callId, from, to } = data;
+      const { answer, callId, from, to } = data;
 
       // Fix: Validate sender - use fallback validation if socketUser is null (reconnection race condition)
       let isAuthorized = socketUser && socketUser.toString() === from.toString();
@@ -652,26 +640,14 @@ exports.init = (server, corsOptions) => {
           return;
         }
 
-        // Forward answer to caller (encrypted or unencrypted)
-        // Server acts as relay - does not decrypt
+        // Forward answer to caller
         const payload = {
+          answer,
           callId,
           from
         };
 
-        // Check if payload is encrypted
-        if (isEncrypted || encrypted === true) {
-          // Encrypted payload
-          payload.encryptedData = encryptedData;
-          payload.isEncrypted = true;
-          console.log(`[SIGNALING] Forwarding encrypted WebRTC answer from ${from} to ${to}`);
-        } else {
-          // Unencrypted payload (backward compatibility)
-          payload.answer = answer;
-          payload.encrypted = false;
-          console.log(`[SIGNALING] Forwarding unencrypted WebRTC answer from ${from} to ${to}`);
-        }
-
+        console.log(`[SIGNALING] Forwarding WebRTC answer from ${from} to ${to}`);
         io.to(to.toString()).emit("voice-call:answer", payload);
       } catch (err) {
         console.error('[SIGNALING] Error validating call:', err);
@@ -680,7 +656,7 @@ exports.init = (server, corsOptions) => {
     });
 
     socket.on("voice-call:ice-candidate", async (data) => {
-      const { candidate, encryptedData, isEncrypted, encrypted, callId, from, to } = data;
+      const { candidate, callId, from, to } = data;
 
       // Fix: Validate sender - use fallback validation if socketUser is null (reconnection race condition)
       // Note: We use async validation for ICE candidates to support fallback, but keep it lightweight
@@ -708,23 +684,12 @@ exports.init = (server, corsOptions) => {
         return;
       }
 
-      // Forward ICE candidate to other party (encrypted or unencrypted)
-      // Server acts as relay - does not decrypt
+      // Forward ICE candidate to other party
       const payload = {
+        candidate,
         callId,
         from
       };
-
-      // Check if payload is encrypted
-      if (isEncrypted || encrypted === true) {
-        // Encrypted payload
-        payload.encryptedData = encryptedData;
-        payload.isEncrypted = true;
-      } else {
-        // Unencrypted payload (backward compatibility)
-        payload.candidate = candidate;
-        payload.encrypted = false;
-      }
 
       io.to(to.toString()).emit("voice-call:ice-candidate", payload);
     });
@@ -755,4 +720,3 @@ exports.getUserSocketCount = (userId) => {
   const userSocketSet = userSockets.get(userId.toString());
   return userSocketSet ? userSocketSet.size : 0;
 };
-
